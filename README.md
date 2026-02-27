@@ -1,3 +1,5 @@
+![logo](logo.png)
+
 # YtDownloader
 
 **YtDownloader** — небольшое GUI-приложение для скачивания видео/аудио через **yt-dlp** с использованием **FFmpeg** для объединения потоков/обработки.
@@ -55,6 +57,7 @@
   Лицензия: BSD 3-Clause
 
 ---
+![application](application.png)
 
 ## 🇬🇧 English
 
