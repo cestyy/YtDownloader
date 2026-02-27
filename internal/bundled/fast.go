@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 )
 
+var ErrToolsMissing = errors.New("tools missing: need download")
+
 func EnsureToolsFast(appName string, withFFmpeg bool) (*Tools, error) {
 	dir, err := appBinDir(appName)
 	if err != nil {
@@ -20,31 +22,34 @@ func EnsureToolsFast(appName string, withFFmpeg bool) (*Tools, error) {
 		YtDlpPath: filepath.Join(dir, "yt-dlp.exe"),
 	}
 
-	if !fileOk(t.YtDlpPath) {
-		if len(YTDLP) == 0 {
-			return nil, errors.New("yt-dlp not available")
-		}
-		if err := ensureFile(t.YtDlpPath, YTDLP); err != nil {
-			return nil, err
-		}
-	}
+	ok := fileOk(t.YtDlpPath)
 
 	if withFFmpeg {
 		t.FfmpegPath = filepath.Join(dir, "ffmpeg.exe")
 		t.FfprobePath = filepath.Join(dir, "ffprobe.exe")
+		ok = ok && fileOk(t.FfmpegPath) && fileOk(t.FfprobePath)
+	}
 
-		if !fileOk(t.FfmpegPath) || !fileOk(t.FfprobePath) {
-			if len(FFMPEG) == 0 || len(FFPROBE) == 0 {
-				return nil, errors.New("ffmpeg not available")
+	if ok {
+		return t, nil
+	}
+
+	if len(YTDLP) > 0 && !fileOk(t.YtDlpPath) {
+		if err := ensureFile(t.YtDlpPath, YTDLP); err != nil {
+			return nil, err
+		}
+		if withFFmpeg {
+			if len(FFMPEG) > 0 && !fileOk(t.FfmpegPath) {
+				_ = ensureFile(t.FfmpegPath, FFMPEG)
 			}
-			if err := ensureFile(t.FfmpegPath, FFMPEG); err != nil {
-				return nil, err
+			if len(FFPROBE) > 0 && !fileOk(t.FfprobePath) {
+				_ = ensureFile(t.FfprobePath, FFPROBE)
 			}
-			if err := ensureFile(t.FfprobePath, FFPROBE); err != nil {
-				return nil, err
-			}
+		}
+		if fileOk(t.YtDlpPath) && (!withFFmpeg || (fileOk(t.FfmpegPath) && fileOk(t.FfprobePath))) {
+			return t, nil
 		}
 	}
 
-	return t, nil
+	return t, ErrToolsMissing
 }

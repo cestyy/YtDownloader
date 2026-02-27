@@ -2,22 +2,122 @@ package app
 
 import (
 	"context"
+	"log"
+	"os"
+	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"YtDownloader/internal/bundled"
-	"YtDownloader/internal/ui"
+	ui "YtDownloader/internal/ui"
 	"YtDownloader/internal/ytdlp"
 
+	"fyne.io/fyne/v2"
 	fyneapp "fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 )
 
+func initFileLogging(appName string) (closer func(), logPath string, err error) {
+	cfg, err := os.UserConfigDir()
+	if err != nil || cfg == "" {
+		home, herr := os.UserHomeDir()
+		if herr != nil {
+			return nil, "", herr
+		}
+		cfg = filepath.Join(home, "."+appName)
+	}
+	logDir := filepath.Join(cfg, appName, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, "", err
+	}
+	logPath = filepath.Join(logDir, "app.log")
+
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, "", err
+	}
+	log.SetOutput(f)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	log.Printf("---- START %s ----", time.Now().Format(time.RFC3339))
+
+	return func() {
+		_ = f.Sync()
+		_ = f.Close()
+	}, logPath, nil
+}
+
 func Run() {
+	closeLog, logPath, err := initFileLogging("YtDownloader")
+	if err == nil && closeLog != nil {
+		defer closeLog()
+		log.Printf("INFO: log file: %s", logPath)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC: %v\n%s", r, string(debug.Stack()))
+		}
+	}()
+
 	a := fyneapp.NewWithID("com.cessttyy.ytDownloader")
 	applyEmbeddedFont(a)
 
 	tools, err := bundled.EnsureToolsFast("YtDownloader", true)
+	if err == bundled.ErrToolsMissing {
+		boot := a.NewWindow("YtDownloader")
+		boot.Resize(fyne.NewSize(440, 160))
+		boot.SetFixedSize(true)
+
+		lbl := widget.NewLabel("Downloading tools (yt-dlp + ffmpeg)…")
+		bar := widget.NewProgressBarInfinite()
+		bar.Start()
+		msg := widget.NewLabel("This is needed only on first run.")
+		btnCancel := widget.NewButton("Cancel", func() {})
+
+		boot.SetContent(container.NewVBox(lbl, bar, msg, btnCancel))
+		boot.Show()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		btnCancel.OnTapped = func() {
+			cancel()
+			boot.Close()
+			a.Quit()
+		}
+
+		go func() {
+			defer cancel()
+			t, derr := bundled.EnsureToolsAutoUpdate(ctx, "YtDownloader", true)
+			if derr != nil {
+				log.Printf("ERROR: EnsureToolsAutoUpdate: %v", derr)
+				fyne.Do(func() {
+					bar.Stop()
+					dialog.ShowError(derr, boot)
+					lbl.SetText("Failed to download tools")
+					msg.SetText("Check internet access and try again.")
+				})
+				return
+			}
+
+			cli := &ytdlp.Runner{
+				YtDlpPath: t.YtDlpPath,
+				FFmpegDir: t.BinDir,
+			}
+
+			fyne.Do(func() {
+				main := ui.ShowMainWindow(a, cli)
+				boot.Close()
+				main.Show()
+			})
+		}()
+
+		a.Run()
+		return
+	}
+
 	if err != nil {
+		log.Printf("ERROR: EnsureToolsFast: %v", err)
 		w := a.NewWindow("YtDownloader")
 		dialog.ShowError(err, w)
 		w.ShowAndRun()
@@ -34,9 +134,10 @@ func Run() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-
-		if _, err := bundled.EnsureToolsAutoUpdate(ctx, "YtDownloader", true); err != nil {
-			return
+		if _, err := bundled.EnsureToolsAutoUpdate(ctx, "YtDownloader", false); err != nil {
+			log.Printf("WARN: tools auto-update: %v", err)
+		} else {
+			log.Printf("INFO: tools updated (background)")
 		}
 	}()
 

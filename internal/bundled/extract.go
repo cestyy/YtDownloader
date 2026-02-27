@@ -68,15 +68,18 @@ func fileSha256Hex(path string) (string, error) {
 
 func ensureFile(path string, content []byte) error {
 	want := sha256HexBytes(content)
+
 	if st, err := os.Stat(path); err == nil && !st.IsDir() {
 		got, err := fileSha256Hex(path)
 		if err == nil && strings.EqualFold(got, want) {
 			return nil
 		}
 	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, content, 0o755); err != nil {
 		return err
@@ -106,14 +109,16 @@ func downloadFileVerified(ctx context.Context, url, dstPath, wantSHA string) err
 	}
 	req.Header.Set("User-Agent", "YtDownloader/1.0")
 
-	client := &http.Client{Timeout: 180 * time.Second}
+	client := &http.Client{Timeout: 8 * time.Minute}
+
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("request %s: %w", url, err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http %d", resp.StatusCode)
+		return fmt.Errorf("http %d for %s", resp.StatusCode, url)
 	}
 
 	out, err := os.Create(tmp)
@@ -154,42 +159,23 @@ func downloadText(ctx context.Context, url string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "YtDownloader/1.0")
-	client := &http.Client{Timeout: 60 * time.Second}
+
+	client := &http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("request %s: %w", url, err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("http %d", resp.StatusCode)
+		return "", fmt.Errorf("http %d for %s", resp.StatusCode, url)
 	}
+
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
-}
-
-func resolveLatestTag(ctx context.Context, ownerRepo string) (string, error) {
-	url := "https://github.com/" + ownerRepo + "/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "YtDownloader/1.0")
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	resp.Body.Close()
-
-	final := resp.Request.URL.Path
-	i := strings.LastIndex(final, "/tag/")
-	if i < 0 {
-		return "", fmt.Errorf("cannot resolve latest tag for %s", ownerRepo)
-	}
-	return final[i+len("/tag/"):], nil
 }
 
 func parseChecksumFileSha256(text, wantName string) (string, error) {
@@ -251,6 +237,7 @@ func extractFFmpegZip(zipPath, outDir string) error {
 	defer zr.Close()
 
 	var gotFF, gotFP bool
+
 	for _, f := range zr.File {
 		n := strings.ToLower(strings.ReplaceAll(f.Name, "\\", "/"))
 		if strings.HasSuffix(n, "/ffmpeg.exe") || strings.HasSuffix(n, "ffmpeg.exe") {
@@ -266,6 +253,7 @@ func extractFFmpegZip(zipPath, outDir string) error {
 			gotFP = true
 		}
 	}
+
 	if !gotFF || !gotFP {
 		return errors.New("ffmpeg.exe/ffprobe.exe not found in zip")
 	}
@@ -305,6 +293,68 @@ func extractOneZipFile(zf *zip.File, dst string) error {
 	return nil
 }
 
+func ensureLatestYtDlp(ctx context.Context, dst string) (string, error) {
+	sumsURL := "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
+	exeURL := "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+
+	sumsText, err := downloadText(ctx, sumsURL)
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp: download checksums: %w", err)
+	}
+	sum, err := parseChecksumFileSha256(sumsText, "yt-dlp.exe")
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp: parse checksums: %w", err)
+	}
+
+	if fileOk(dst) {
+		if got, gerr := fileSha256Hex(dst); gerr == nil && strings.EqualFold(got, sum) {
+			return sum, nil
+		}
+	}
+
+	if err := downloadFileVerified(ctx, exeURL, dst, sum); err != nil {
+		return "", fmt.Errorf("yt-dlp: download exe: %w", err)
+	}
+	return sum, nil
+}
+
+func ensureLatestFFmpegWin64(ctx context.Context, binDir string) (string, error) {
+	zipName := "ffmpeg-master-latest-win64-gpl-shared.zip"
+	checksURL := "https://github.com/btbn/ffmpeg-builds/releases/latest/download/checksums.sha256"
+	zipURL := "https://github.com/btbn/ffmpeg-builds/releases/latest/download/" + zipName
+
+	checksText, err := downloadText(ctx, checksURL)
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg: download checksums: %w", err)
+	}
+	zipSHA, err := parseChecksumFileSha256(checksText, zipName)
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg: parse checksums: %w", err)
+	}
+
+	ff := filepath.Join(binDir, "ffmpeg.exe")
+	fp := filepath.Join(binDir, "ffprobe.exe")
+	if fileOk(ff) && fileOk(fp) {
+		return zipSHA, nil
+	}
+
+	zipPath := filepath.Join(binDir, "ffmpeg.zip")
+	if err := downloadFileVerified(ctx, zipURL, zipPath, zipSHA); err != nil {
+		return "", fmt.Errorf("ffmpeg: download zip: %w", err)
+	}
+	if err := extractFFmpegZip(zipPath, binDir); err != nil {
+		_ = os.Remove(zipPath)
+		return "", fmt.Errorf("ffmpeg: extract zip: %w", err)
+	}
+	_ = os.Remove(zipPath)
+
+	if !fileOk(ff) || !fileOk(fp) {
+		return "", fmt.Errorf("ffmpeg: extracted but ffmpeg.exe/ffprobe.exe missing")
+	}
+
+	return zipSHA, nil
+}
+
 func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool) (*Tools, error) {
 	dir, err := appBinDir(appName)
 	if err != nil {
@@ -323,47 +373,29 @@ func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool)
 	now := time.Now().Unix()
 	needCheck := st.CheckedAtUnix == 0 || (now-st.CheckedAtUnix) >= int64((7*24*time.Hour).Seconds())
 
-	if needCheck {
+	ff := filepath.Join(dir, "ffmpeg.exe")
+	fp := filepath.Join(dir, "ffprobe.exe")
+
+	if needCheck || !fileOk(t.YtDlpPath) || (withFFmpeg && (!fileOk(ff) || !fileOk(fp))) {
 		newState := st
 		newState.CheckedAtUnix = now
 
-		ytTag, ytErr := resolveLatestTag(ctx, "yt-dlp/yt-dlp")
-		if ytErr == nil && ytTag != "" {
-			sumsURL := "https://github.com/yt-dlp/yt-dlp/releases/download/" + ytTag + "/SHA2-256SUMS"
-			sumsText, err := downloadText(ctx, sumsURL)
-			if err == nil {
-				sum, err := parseChecksumFileSha256(sumsText, "yt-dlp.exe")
-				if err == nil && (ytTag != st.YtDlpTag || !strings.EqualFold(sum, st.YtDlpSHA) || !fileOk(t.YtDlpPath)) {
-					exeURL := "https://github.com/yt-dlp/yt-dlp/releases/download/" + ytTag + "/yt-dlp.exe"
-					if downloadFileVerified(ctx, exeURL, t.YtDlpPath, sum) == nil {
-						newState.YtDlpTag = ytTag
-						newState.YtDlpSHA = sum
-					}
-				}
+		if sum, err := ensureLatestYtDlp(ctx, t.YtDlpPath); err == nil {
+			newState.YtDlpTag = "latest"
+			newState.YtDlpSHA = sum
+		} else {
+			if !fileOk(t.YtDlpPath) && len(YTDLP) == 0 {
+				return nil, err
 			}
 		}
 
 		if withFFmpeg {
-			ffTag, ffErr := resolveLatestTag(ctx, "btbn/ffmpeg-builds")
-			if ffErr == nil && ffTag != "" {
-				checksURL := "https://github.com/btbn/ffmpeg-builds/releases/download/" + ffTag + "/checksums.sha256"
-				checksText, err := downloadText(ctx, checksURL)
-				if err == nil {
-					zipName := "ffmpeg-master-latest-win64-gpl-shared.zip"
-					zipSHA, err := parseChecksumFileSha256(checksText, zipName)
-					if err == nil && (ffTag != st.FFTag || !strings.EqualFold(zipSHA, st.FFZipSHA) || !fileOk(filepath.Join(dir, "ffmpeg.exe")) || !fileOk(filepath.Join(dir, "ffprobe.exe"))) {
-						zipURL := "https://github.com/btbn/ffmpeg-builds/releases/download/" + ffTag + "/" + zipName
-						zipPath := filepath.Join(dir, "ffmpeg.zip")
-						if downloadFileVerified(ctx, zipURL, zipPath, zipSHA) == nil {
-							if extractFFmpegZip(zipPath, dir) == nil {
-								_ = os.Remove(zipPath)
-								newState.FFTag = ffTag
-								newState.FFZipSHA = zipSHA
-							} else {
-								_ = os.Remove(zipPath)
-							}
-						}
-					}
+			if zipSHA, err := ensureLatestFFmpegWin64(ctx, dir); err == nil {
+				newState.FFTag = "latest"
+				newState.FFZipSHA = zipSHA
+			} else {
+				if (!fileOk(ff) || !fileOk(fp)) && (len(FFMPEG) == 0 || len(FFPROBE) == 0) {
+					return nil, err
 				}
 			}
 		}
@@ -381,8 +413,8 @@ func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool)
 	}
 
 	if withFFmpeg {
-		t.FfmpegPath = filepath.Join(dir, "ffmpeg.exe")
-		t.FfprobePath = filepath.Join(dir, "ffprobe.exe")
+		t.FfmpegPath = ff
+		t.FfprobePath = fp
 
 		if !fileOk(t.FfmpegPath) || !fileOk(t.FfprobePath) {
 			if len(FFMPEG) == 0 || len(FFPROBE) == 0 {

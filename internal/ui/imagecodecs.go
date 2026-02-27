@@ -1,4 +1,4 @@
-package ui
+package app
 
 import (
 	_ "golang.org/x/image/webp"
