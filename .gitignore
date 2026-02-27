@@ -1,7 +1,5 @@
 # Go
-/bin/
 /dist/
-*.exe
 *.dll
 *.so
 *.dylib
@@ -10,7 +8,7 @@
 *.zip
 
 # IDE
-.idea/
+../.idea/
 .vscode/
 
 # OS

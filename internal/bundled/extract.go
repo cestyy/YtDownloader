@@ -1,1 +1,401 @@
 package bundled
+
+import (
+	"archive/zip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+type Tools struct {
+	YtDlpPath   string
+	FfmpegPath  string
+	FfprobePath string
+	BinDir      string
+}
+
+type updateState struct {
+	CheckedAtUnix int64  `json:"checked_at_unix"`
+	YtDlpTag      string `json:"yt_dlp_tag"`
+	YtDlpSHA      string `json:"yt_dlp_sha"`
+	FFTag         string `json:"ff_tag"`
+	FFZipSHA      string `json:"ff_zip_sha"`
+}
+
+func appBinDir(appName string) (string, error) {
+	cache, err := os.UserCacheDir()
+	if err == nil && cache != "" {
+		return filepath.Join(cache, appName, "bin"), nil
+	}
+	cfg, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cfg, appName, "bin"), nil
+}
+
+func fileOk(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir() && st.Size() > 0
+}
+
+func sha256HexBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func fileSha256Hex(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func ensureFile(path string, content []byte) error {
+	want := sha256HexBytes(content)
+	if st, err := os.Stat(path); err == nil && !st.IsDir() {
+		got, err := fileSha256Hex(path)
+		if err == nil && strings.EqualFold(got, want) {
+			return nil
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, content, 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func downloadFileVerified(ctx context.Context, url, dstPath, wantSHA string) error {
+	if wantSHA == "" {
+		return errors.New("empty sha256")
+	}
+
+	tmp := dstPath + ".tmp"
+	_ = os.Remove(tmp)
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "YtDownloader/1.0")
+
+	client := &http.Client{Timeout: 180 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("http %d", resp.StatusCode)
+	}
+
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	h := sha256.New()
+	mw := io.MultiWriter(out, h)
+
+	if _, err := io.Copy(mw, resp.Body); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+
+	got := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(got, wantSHA) {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sha256 mismatch: got %s want %s", got, wantSHA)
+	}
+
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Remove(dstPath)
+	if err := os.Rename(tmp, dstPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func downloadText(ctx context.Context, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "YtDownloader/1.0")
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("http %d", resp.StatusCode)
+	}
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func resolveLatestTag(ctx context.Context, ownerRepo string) (string, error) {
+	url := "https://github.com/" + ownerRepo + "/releases/latest"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "YtDownloader/1.0")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+
+	final := resp.Request.URL.Path
+	i := strings.LastIndex(final, "/tag/")
+	if i < 0 {
+		return "", fmt.Errorf("cannot resolve latest tag for %s", ownerRepo)
+	}
+	return final[i+len("/tag/"):], nil
+}
+
+func parseChecksumFileSha256(text, wantName string) (string, error) {
+	lines := strings.Split(text, "\n")
+	for _, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		fields := strings.Fields(ln)
+		if len(fields) < 2 {
+			continue
+		}
+		sum := strings.ToLower(strings.TrimSpace(fields[0]))
+		name := strings.TrimSpace(fields[len(fields)-1])
+		name = strings.TrimPrefix(name, "*")
+		name = strings.TrimPrefix(name, "./")
+		if name == wantName {
+			if len(sum) == 64 {
+				return sum, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("sha256 for %s not found", wantName)
+}
+
+func statePath(binDir string) string {
+	return filepath.Join(binDir, "update_state.json")
+}
+
+func loadState(binDir string) updateState {
+	p := statePath(binDir)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return updateState{}
+	}
+	var s updateState
+	if json.Unmarshal(b, &s) != nil {
+		return updateState{}
+	}
+	return s
+}
+
+func saveState(binDir string, s updateState) {
+	p := statePath(binDir)
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(p+".tmp", b, 0o644)
+	_ = os.Rename(p+".tmp", p)
+}
+
+func extractFFmpegZip(zipPath, outDir string) error {
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+
+	var gotFF, gotFP bool
+	for _, f := range zr.File {
+		n := strings.ToLower(strings.ReplaceAll(f.Name, "\\", "/"))
+		if strings.HasSuffix(n, "/ffmpeg.exe") || strings.HasSuffix(n, "ffmpeg.exe") {
+			if err := extractOneZipFile(f, filepath.Join(outDir, "ffmpeg.exe")); err != nil {
+				return err
+			}
+			gotFF = true
+		}
+		if strings.HasSuffix(n, "/ffprobe.exe") || strings.HasSuffix(n, "ffprobe.exe") {
+			if err := extractOneZipFile(f, filepath.Join(outDir, "ffprobe.exe")); err != nil {
+				return err
+			}
+			gotFP = true
+		}
+	}
+	if !gotFF || !gotFP {
+		return errors.New("ffmpeg.exe/ffprobe.exe not found in zip")
+	}
+	return nil
+}
+
+func extractOneZipFile(zf *zip.File, dst string) error {
+	rc, err := zf.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	tmp := dst + ".tmp"
+	_ = os.Remove(tmp)
+
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, rc); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+
+	_ = os.Remove(dst)
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool) (*Tools, error) {
+	dir, err := appBinDir(appName)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+
+	t := &Tools{
+		BinDir:    dir,
+		YtDlpPath: filepath.Join(dir, "yt-dlp.exe"),
+	}
+
+	st := loadState(dir)
+	now := time.Now().Unix()
+	needCheck := st.CheckedAtUnix == 0 || (now-st.CheckedAtUnix) >= int64((7*24*time.Hour).Seconds())
+
+	if needCheck {
+		newState := st
+		newState.CheckedAtUnix = now
+
+		ytTag, ytErr := resolveLatestTag(ctx, "yt-dlp/yt-dlp")
+		if ytErr == nil && ytTag != "" {
+			sumsURL := "https://github.com/yt-dlp/yt-dlp/releases/download/" + ytTag + "/SHA2-256SUMS"
+			sumsText, err := downloadText(ctx, sumsURL)
+			if err == nil {
+				sum, err := parseChecksumFileSha256(sumsText, "yt-dlp.exe")
+				if err == nil && (ytTag != st.YtDlpTag || !strings.EqualFold(sum, st.YtDlpSHA) || !fileOk(t.YtDlpPath)) {
+					exeURL := "https://github.com/yt-dlp/yt-dlp/releases/download/" + ytTag + "/yt-dlp.exe"
+					if downloadFileVerified(ctx, exeURL, t.YtDlpPath, sum) == nil {
+						newState.YtDlpTag = ytTag
+						newState.YtDlpSHA = sum
+					}
+				}
+			}
+		}
+
+		if withFFmpeg {
+			ffTag, ffErr := resolveLatestTag(ctx, "btbn/ffmpeg-builds")
+			if ffErr == nil && ffTag != "" {
+				checksURL := "https://github.com/btbn/ffmpeg-builds/releases/download/" + ffTag + "/checksums.sha256"
+				checksText, err := downloadText(ctx, checksURL)
+				if err == nil {
+					zipName := "ffmpeg-master-latest-win64-gpl-shared.zip"
+					zipSHA, err := parseChecksumFileSha256(checksText, zipName)
+					if err == nil && (ffTag != st.FFTag || !strings.EqualFold(zipSHA, st.FFZipSHA) || !fileOk(filepath.Join(dir, "ffmpeg.exe")) || !fileOk(filepath.Join(dir, "ffprobe.exe"))) {
+						zipURL := "https://github.com/btbn/ffmpeg-builds/releases/download/" + ffTag + "/" + zipName
+						zipPath := filepath.Join(dir, "ffmpeg.zip")
+						if downloadFileVerified(ctx, zipURL, zipPath, zipSHA) == nil {
+							if extractFFmpegZip(zipPath, dir) == nil {
+								_ = os.Remove(zipPath)
+								newState.FFTag = ffTag
+								newState.FFZipSHA = zipSHA
+							} else {
+								_ = os.Remove(zipPath)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		saveState(dir, newState)
+	}
+
+	if !fileOk(t.YtDlpPath) {
+		if len(YTDLP) == 0 {
+			return nil, errors.New("yt-dlp not available (download failed and not embedded)")
+		}
+		if err := ensureFile(t.YtDlpPath, YTDLP); err != nil {
+			return nil, err
+		}
+	}
+
+	if withFFmpeg {
+		t.FfmpegPath = filepath.Join(dir, "ffmpeg.exe")
+		t.FfprobePath = filepath.Join(dir, "ffprobe.exe")
+
+		if !fileOk(t.FfmpegPath) || !fileOk(t.FfprobePath) {
+			if len(FFMPEG) == 0 || len(FFPROBE) == 0 {
+				return nil, errors.New("ffmpeg requested but not available (download failed and not embedded)")
+			}
+			if err := ensureFile(t.FfmpegPath, FFMPEG); err != nil {
+				return nil, err
+			}
+			if err := ensureFile(t.FfprobePath, FFPROBE); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return t, nil
+}
