@@ -64,7 +64,6 @@ func (r *Runner) FetchInfo(ctx context.Context, url string) (*VideoInfo, error) 
 type ProgressHandler func(p Progress)
 type LineHandler func(line string)
 
-// Теперь функция возвращает путь к скачанному файлу (string)
 func (r *Runner) Download(ctx context.Context, url, format, outDir string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
 	if format == "" {
 		return "", errors.New("format is empty")
@@ -77,7 +76,6 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 		"--progress",
 		"--no-color",
 		"--no-warnings",
-		// Улучшения для стабильности и скорости:
 		"-N", "8",
 		"--retries", "10",
 		"--fragment-retries", "10",
@@ -122,7 +120,6 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 			return
 		}
 
-		// Пытаемся поймать путь к финальному файлу из логов yt-dlp
 		if strings.HasPrefix(line, "[download] Destination: ") {
 			finalFilePath = strings.TrimPrefix(line, "[download] Destination: ")
 		} else if strings.HasPrefix(line, "[Merger] Merging formats into ") {
