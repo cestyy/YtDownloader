@@ -1,4 +1,4 @@
-![logo](logo.png)
+![logo](image/logo.png)
 
 # YtDownloader
 
@@ -57,7 +57,7 @@
   Лицензия: BSD 3-Clause
 
 ---
-![application](application.png)
+![application](image/application.png)
 
 ## 🇬🇧 English
 
