@@ -72,8 +72,9 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	downloadProgress.Min, downloadProgress.Max = 0, 100
 	downloadProgress.SetValue(0)
 
-	busy := widget.NewProgressBarInfinite()
-	busy.Hide()
+	progressInfo := widget.NewLabel("")
+	progressInfo.Alignment = fyne.TextAlignTrailing
+	progressInfo.TextStyle = fyne.TextStyle{Italic: true}
 
 	logger := NewUILogger(900)
 
@@ -148,6 +149,17 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		fyne.Do(func() { downloadProgress.SetValue(v) })
 	}
 
+	setProgressInfo := func(spd, eta string) {
+		fyne.Do(func() {
+			if spd == "" && eta == "" {
+				progressInfo.SetText("")
+			} else {
+				etaSec, _ := strconv.ParseFloat(eta, 64)
+				progressInfo.SetText(fmt.Sprintf("Speed: %s | ETA: %s", emptyToDash(spd), formatDuration(etaSec)))
+			}
+		})
+	}
+
 	progressLine := func(p ytdlp.Progress) (string, float64) {
 		pct := parsePercent(p.Pct)
 		line := fmt.Sprintf("[download] %s  %s  eta:%v",
@@ -199,7 +211,6 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	var formatListTapBlock bool
 	var applyFilter func()
 
-	// ДВА ВЫПАДАЮЩИХ СПИСКА ДЛЯ ФИЛЬТРОВ
 	resSelect := widget.NewSelect([]string{"All", "4K", "1440p", "1080p", "720p", "480p", "Audio Only"}, func(s string) {
 		if applyFilter != nil {
 			applyFilter()
@@ -242,8 +253,17 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	)
 
 	toolsStatus := widget.NewLabel("Tools: ready")
-	toolsBusy := widget.NewProgressBarInfinite()
+
+	// ИСПРАВЛЕНИЕ: Обычный прогресс-бар для тулзов
+	toolsBusy := widget.NewProgressBar()
+	toolsBusy.Min = 0
+	toolsBusy.Max = 100
+	toolsBusy.SetValue(0)
 	toolsBusy.Hide()
+
+	// Основной индиктор загрузки (для парсинга URL)
+	busy := widget.NewProgressBarInfinite()
+	busy.Hide()
 
 	btnToolsFolder := widget.NewButton("Tools folder", func() {
 		t, err := bundled.AppPathsForUI(appName)
@@ -265,14 +285,13 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			}
 			if on {
 				toolsBusy.Show()
-				toolsBusy.Start()
 				btnToolsUpdate.Disable()
 				btnToolsCancel.Enable()
 			} else {
-				toolsBusy.Stop()
 				toolsBusy.Hide()
 				btnToolsUpdate.Enable()
 				btnToolsCancel.Disable()
+				toolsBusy.SetValue(0) // ИСПРАВЛЕНИЕ: Сброс нормального прогресс-бара
 			}
 		})
 	}
@@ -292,7 +311,13 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		logger.Dbg("--- TOOLS UPDATE ---")
 
 		go func() {
-			tools, err := bundled.EnsureToolsAutoUpdate(ctx, appName, true)
+			// ИСПРАВЛЕНИЕ: pct вместо pot
+			tools, err := bundled.EnsureToolsAutoUpdate(ctx, appName, true, func(task string, pct float64) {
+				fyne.Do(func() {
+					toolsStatus.SetText(task)
+					toolsBusy.SetValue(pct * 100)
+				})
+			})
 
 			updMu.Lock()
 			updRunning = false
@@ -396,6 +421,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			logger.Warn("Cancelling download…")
 			c()
 		}
+		progressInfo.SetText("")
 	}
 
 	btnBest.OnTapped = func() {
@@ -432,6 +458,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 					_, pct := progressLine(p)
 					if pct >= 0 {
 						setDownloadProgress(pct)
+						setProgressInfo(p.Spd, p.Eta)
 						if shouldLogProgress(pct) {
 							line, _ := progressLine(p)
 							logger.Dbg(line)
@@ -459,6 +486,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 				return
 			}
 			setDownloadProgress(100)
+			progressInfo.SetText("")
 			setStatus("Done ✅")
 			fyne.Do(func() { btnOpenFolder.Enable() })
 			playDoneSound()
@@ -608,6 +636,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 					_, pct := progressLine(p)
 					if pct >= 0 {
 						setDownloadProgress(pct)
+						setProgressInfo(p.Spd, p.Eta)
 						if shouldLogProgress(pct) {
 							line, _ := progressLine(p)
 							logger.Dbg(line)
@@ -635,6 +664,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 				return
 			}
 			setDownloadProgress(100)
+			progressInfo.SetText("")
 			setStatus("Done ✅")
 			fyne.Do(func() { btnOpenFolder.Enable() })
 			playDoneSound()
@@ -668,6 +698,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		widget.NewLabel("Status:"),
 		status,
 		downloadProgress,
+		progressInfo,
 		widget.NewSeparator(),
 		widget.NewLabel("Preview:"),
 		previewTitle,
