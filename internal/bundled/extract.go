@@ -319,7 +319,7 @@ func ensureLatestYtDlp(ctx context.Context, dst string) (string, error) {
 }
 
 func ensureLatestFFmpegWin64(ctx context.Context, binDir string) (string, error) {
-	zipName := "ffmpeg-master-latest-win64-gpl-shared.zip"
+	zipName := "ffmpeg-master-latest-win64-gpl.zip"
 	checksURL := "https://github.com/btbn/ffmpeg-builds/releases/latest/download/checksums.sha256"
 	zipURL := "https://github.com/btbn/ffmpeg-builds/releases/latest/download/" + zipName
 
@@ -405,7 +405,7 @@ func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool)
 
 	if !fileOk(t.YtDlpPath) {
 		if len(YTDLP) == 0 {
-			return nil, errors.New("yt-dlp not available (download failed and not embedded)")
+			return nil, errors.New("yt-dlp not available")
 		}
 		if err := ensureFile(t.YtDlpPath, YTDLP); err != nil {
 			return nil, err
@@ -418,7 +418,7 @@ func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool)
 
 		if !fileOk(t.FfmpegPath) || !fileOk(t.FfprobePath) {
 			if len(FFMPEG) == 0 || len(FFPROBE) == 0 {
-				return nil, errors.New("ffmpeg requested but not available (download failed and not embedded)")
+				return nil, errors.New("ffmpeg not available")
 			}
 			if err := ensureFile(t.FfmpegPath, FFMPEG); err != nil {
 				return nil, err

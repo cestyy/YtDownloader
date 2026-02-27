@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image/color"
 	"io"
 	"net/http"
 	neturl "net/url"
@@ -29,8 +30,32 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+func formatBytes(b int64) string {
+	if b <= 0 {
+		return "? MB"
+	}
+	mb := float64(b) / (1024 * 1024)
+	return fmt.Sprintf("%.1f MB", mb)
+}
+
+func formatDuration(sec float64) string {
+	if sec <= 0 {
+		return "?:??"
+	}
+	d := time.Duration(sec * float64(time.Second))
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
 func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	const appName = "YtDownloader"
+
+	a.Settings().SetTheme(&customTheme{dark: true})
 
 	w := a.NewWindow("YtDownloader")
 	w.Resize(fyne.NewSize(1200, 740))
@@ -61,6 +86,24 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 
 	formatsAll := make([]ytdlp.Format, 0)
 	formatsView := make([]ytdlp.Format, 0)
+	var currentVideoDuration float64
+
+	mergeFormat := "mp4"
+	formatSelect := widget.NewSelect([]string{"mp4", "mkv", "webm", "avi", "flv", "mp3"}, func(s string) {
+		mergeFormat = s
+	})
+	formatSelect.SetSelected("mp4")
+
+	selectedBrowser := "none"
+	browserSelect := widget.NewSelect([]string{"none", "chrome", "edge", "firefox", "opera", "brave", "safari", "vivaldi"}, func(s string) {
+		selectedBrowser = s
+	})
+	browserSelect.SetSelected("none")
+
+	themeSelect := widget.NewSelect([]string{"Dark", "Light"}, func(s string) {
+		a.Settings().SetTheme(&customTheme{dark: s == "Dark"})
+	})
+	themeSelect.SetSelected("Dark")
 
 	btnDownload := widget.NewButton("Download selected", func() {})
 	btnDownload.Disable()
@@ -77,7 +120,6 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		dlMu.Lock()
 		target := lastDownloadedFile
 		dlMu.Unlock()
-
 		_ = showFileInFolder(target, st.OutputDir)
 	})
 	btnOpenFolder.Disable()
@@ -153,9 +195,44 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		progMu.Unlock()
 	}
 
-	var filterEntry *widget.Entry
 	var formatList *widget.List
 	var formatListTapBlock bool
+	var applyFilter func()
+
+	// ДВА ВЫПАДАЮЩИХ СПИСКА ДЛЯ ФИЛЬТРОВ
+	resSelect := widget.NewSelect([]string{"All", "4K", "1440p", "1080p", "720p", "480p", "Audio Only"}, func(s string) {
+		if applyFilter != nil {
+			applyFilter()
+			fyne.Do(func() {
+				st.SelectedFmt = ""
+				btnDownload.Disable()
+				formatList.UnselectAll()
+				formatList.Refresh()
+			})
+		}
+	})
+	resSelect.SetSelected("All")
+
+	extSelect := widget.NewSelect([]string{"All", "mp4", "webm", "m4a"}, func(s string) {
+		if applyFilter != nil {
+			applyFilter()
+			fyne.Do(func() {
+				st.SelectedFmt = ""
+				btnDownload.Disable()
+				formatList.UnselectAll()
+				formatList.Refresh()
+			})
+		}
+	})
+	extSelect.SetSelected("All")
+
+	filterUI := container.NewVBox(
+		widget.NewLabelWithStyle("Filters:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewGridWithColumns(2,
+			container.NewVBox(widget.NewLabel("Resolution (Quality):"), resSelect),
+			container.NewVBox(widget.NewLabel("Format (Extension):"), extSelect),
+		),
+	)
 
 	var (
 		updMu       sync.Mutex
@@ -280,9 +357,11 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 				urlEntry.Disable()
 				btnToolsUpdate.Disable()
 				btnToolsFolder.Disable()
-				if filterEntry != nil {
-					filterEntry.Disable()
-				}
+				formatSelect.Disable()
+				themeSelect.Disable()
+				browserSelect.Disable()
+				resSelect.Disable()
+				extSelect.Disable()
 			} else {
 				formatListTapBlock = false
 				btnBest.Enable()
@@ -290,14 +369,16 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 				btnCancel.Disable()
 				urlEntry.Enable()
 				btnToolsFolder.Enable()
+				formatSelect.Enable()
+				themeSelect.Enable()
+				browserSelect.Enable()
+				resSelect.Enable()
+				extSelect.Enable()
 				updMu.Lock()
 				running := updRunning
 				updMu.Unlock()
 				if !running {
 					btnToolsUpdate.Enable()
-				}
-				if filterEntry != nil {
-					filterEntry.Enable()
 				}
 				if strings.TrimSpace(st.SelectedFmt) != "" {
 					btnDownload.Enable()
@@ -340,8 +421,13 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		lastDownloadedFile = ""
 		dlMu.Unlock()
 
+		dlFormat := "bestvideo+bestaudio/best"
+		if mergeFormat == "mp3" {
+			dlFormat = "bestaudio/best"
+		}
+
 		go func(url string) {
-			resultPath, err := cli.Download(ctx, url, "best[vcodec!=none][acodec!=none]/b", st.OutputDir,
+			resultPath, err := cli.Download(ctx, url, dlFormat, st.OutputDir, mergeFormat, selectedBrowser,
 				func(p ytdlp.Progress) {
 					_, pct := progressLine(p)
 					if pct >= 0 {
@@ -379,69 +465,44 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		}(u)
 	}
 
-	filterEntry = widget.NewEntry()
-	filterEntry.SetPlaceHolder("Filter formats (mp4, 1080, audio, vp9)…")
+	applyFilter = func() {
+		selRes := resSelect.Selected
+		selExt := extSelect.Selected
 
-	formatRes := func(f ytdlp.Format) string {
-		if f.Width > 0 && f.Height > 0 {
-			return fmt.Sprintf("%dx%d", f.Width, f.Height)
-		}
-		if f.ACodec != "" && f.ACodec != "none" && (f.VCodec == "" || f.VCodec == "none") {
-			return "audio"
-		}
-		return ""
-	}
-
-	fpsStr := func(f ytdlp.Format) string {
-		if f.FPS <= 0 {
-			return ""
-		}
-		if f.FPS == float64(int64(f.FPS)) {
-			return fmt.Sprintf("%d", int64(f.FPS))
-		}
-		return fmt.Sprintf("%.2f", f.FPS)
-	}
-
-	formatNote := func(f ytdlp.Format) string {
-		parts := make([]string, 0, 8)
-		if f.Protocol != "" {
-			parts = append(parts, f.Protocol)
-		}
-		if f.TBR > 0 {
-			parts = append(parts, fmt.Sprintf("tbr:%.0f", f.TBR))
-		}
-		if f.VBR > 0 {
-			parts = append(parts, fmt.Sprintf("vbr:%.0f", f.VBR))
-		}
-		if f.ABR > 0 {
-			parts = append(parts, fmt.Sprintf("abr:%.0f", f.ABR))
-		}
-		if f.Filesize > 0 {
-			parts = append(parts, fmt.Sprintf("size:%d", f.Filesize))
-		} else if f.FilesizeApprox > 0 {
-			parts = append(parts, fmt.Sprintf("size~:%d", f.FilesizeApprox))
-		}
-		return strings.Join(parts, " | ")
-	}
-
-	applyFilter := func() {
-		q := strings.ToLower(strings.TrimSpace(filterEntry.Text))
-		if q == "" {
+		if selRes == "All" && selExt == "All" {
 			formatsView = formatsAll
 			return
 		}
+
 		out := make([]ytdlp.Format, 0, len(formatsAll))
 		for _, f := range formatsAll {
-			hay := strings.ToLower(
-				f.FormatID + " " +
-					f.Ext + " " +
-					formatRes(f) + " " +
-					fpsStr(f) + " " +
-					f.VCodec + " " +
-					f.ACodec + " " +
-					formatNote(f),
-			)
-			if strings.Contains(hay, q) {
+			resMatch := false
+			switch selRes {
+			case "All":
+				resMatch = true
+			case "4K":
+				resMatch = f.Height >= 2160
+			case "1440p":
+				resMatch = f.Height >= 1440 && f.Height < 2160
+			case "1080p":
+				resMatch = f.Height >= 1080 && f.Height < 1440
+			case "720p":
+				resMatch = f.Height >= 720 && f.Height < 1080
+			case "480p":
+				resMatch = f.Height > 0 && f.Height < 720
+			case "Audio Only":
+				resMatch = f.VCodec == "" || f.VCodec == "none"
+			}
+
+			extMatch := false
+			switch selExt {
+			case "All":
+				extMatch = true
+			default:
+				extMatch = f.Ext == selExt
+			}
+
+			if resMatch && extMatch {
 				out = append(out, f)
 			}
 		}
@@ -463,20 +524,27 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			l1 := v.Objects[0].(*widget.Label)
 			l2 := v.Objects[1].(*widget.Label)
 
-			l1.SetText(fmt.Sprintf("%s | %s | %s | fps:%s | v:%s a:%s",
-				emptyToDash(f.FormatID),
-				emptyToDash(f.Ext),
-				emptyToDash(formatRes(f)),
-				emptyToDash(fpsStr(f)),
-				emptyToDash(f.VCodec),
-				emptyToDash(f.ACodec),
-			))
-
-			n := formatNote(f)
-			if len(n) > 160 {
-				n = n[:160] + "..."
+			res := "Audio"
+			if f.Height > 0 {
+				res = fmt.Sprintf("%dp", f.Height)
+			} else if f.Width > 0 {
+				res = fmt.Sprintf("%dp", f.Width)
 			}
-			l2.SetText(n)
+
+			sizeBytes := f.Filesize
+			if sizeBytes == 0 {
+				sizeBytes = f.FilesizeApprox
+			}
+			sizeStr := formatBytes(sizeBytes)
+			durStr := formatDuration(currentVideoDuration)
+
+			l1.SetText(fmt.Sprintf("%s  •  %s  •  Time: %s", res, sizeStr, durStr))
+
+			fps := ""
+			if f.FPS > 0 {
+				fps = fmt.Sprintf(" | fps: %v", f.FPS)
+			}
+			l2.SetText(fmt.Sprintf("fmt: %s | ext: %s%s | v: %s a: %s", emptyToDash(f.FormatID), f.Ext, fps, emptyToDash(f.VCodec), emptyToDash(f.ACodec)))
 		},
 	)
 
@@ -490,11 +558,6 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			btnDownload.Enable()
 			logger.Dbg("Selected format: " + st.SelectedFmt)
 		}
-	}
-
-	filterEntry.OnChanged = func(_ string) {
-		applyFilter()
-		fyne.Do(func() { formatList.Refresh() })
 	}
 
 	btnDownload.OnTapped = func() {
@@ -525,8 +588,22 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		lastDownloadedFile = ""
 		dlMu.Unlock()
 
+		dlFormat := st.SelectedFmt
+		if mergeFormat != "mp3" {
+			for _, f := range formatsAll {
+				if f.FormatID == st.SelectedFmt {
+					hasV := f.VCodec != "" && f.VCodec != "none"
+					hasA := f.ACodec != "" && f.ACodec != "none"
+					if hasV && !hasA {
+						dlFormat = st.SelectedFmt + "+bestaudio"
+					}
+					break
+				}
+			}
+		}
+
 		go func(url, fmtID string) {
-			resultPath, err := cli.Download(ctx, url, fmtID, st.OutputDir,
+			resultPath, err := cli.Download(ctx, url, fmtID, st.OutputDir, mergeFormat, selectedBrowser,
 				func(p ytdlp.Progress) {
 					_, pct := progressLine(p)
 					if pct >= 0 {
@@ -561,7 +638,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			setStatus("Done ✅")
 			fyne.Do(func() { btnOpenFolder.Enable() })
 			playDoneSound()
-		}(u, st.SelectedFmt)
+		}(u, dlFormat)
 	}
 
 	topRow := container.NewBorder(nil, nil, widget.NewLabel("URL:"), nil, urlEntry)
@@ -581,8 +658,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		dirRow,
 		btnRow,
 		widget.NewSeparator(),
-		widget.NewLabel("Formats:"),
-		filterEntry,
+		filterUI,
 		busy,
 	)
 
@@ -605,6 +681,15 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 
 	settingsView := container.NewVBox(
 		widget.NewLabelWithStyle("Application Settings", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewSeparator(),
+		widget.NewLabel("Appearance"),
+		themeSelect,
+		widget.NewSeparator(),
+		widget.NewLabel("Output Format (video/audio)"),
+		formatSelect,
+		widget.NewSeparator(),
+		widget.NewLabel("Bypass YouTube Bot Check"),
+		browserSelect,
 		widget.NewSeparator(),
 		widget.NewLabel("Tools (yt-dlp & ffmpeg)"),
 		container.NewHBox(toolsStatus, toolsBusy),
@@ -636,9 +721,11 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			st.SelectedFmt = ""
 			formatsAll = nil
 			formatsView = nil
+			currentVideoDuration = 0
+			resSelect.SetSelected("All")
+			extSelect.SetSelected("All")
 			formatList.UnselectAll()
 			formatList.Refresh()
-			filterEntry.SetText("")
 			previewTitle.SetText("—")
 			previewImg.Resource = nil
 			previewImg.Refresh()
@@ -670,7 +757,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		logger.Dbg("--- PROCESS URL --- " + url)
 
 		go func(myURL string, myCtx context.Context) {
-			info, err := cli.FetchInfo(myCtx, myURL)
+			info, err := cli.FetchInfo(myCtx, myURL, selectedBrowser)
 			if myCtx.Err() != nil {
 				return
 			}
@@ -687,16 +774,16 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			}
 
 			formatsAll = info.Formats
-			formatsView = info.Formats
+			currentVideoDuration = info.Duration
 
 			fyne.Do(func() {
 				if strings.TrimSpace(urlEntry.Text) != myURL {
 					return
 				}
-				filterEntry.SetText("")
+				applyFilter()
 				formatList.UnselectAll()
 				formatList.Refresh()
-				setStatus(fmt.Sprintf("Found formats: %d", len(info.Formats)))
+				setStatus(fmt.Sprintf("Found formats: %d", len(formatsView)))
 				busy.Hide()
 				if info.Title != "" {
 					previewTitle.SetText(info.Title)
@@ -938,4 +1025,52 @@ func playDoneSound() {
 	case "linux":
 		exec.Command("paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga").Start()
 	}
+}
+
+type customTheme struct {
+	dark bool
+}
+
+func (t *customTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	if t.dark {
+		switch name {
+		case theme.ColorNameBackground:
+			return color.RGBA{R: 15, G: 15, B: 20, A: 255}
+		case theme.ColorNameInputBackground, theme.ColorNameButton:
+			return color.RGBA{R: 28, G: 32, B: 40, A: 255}
+		case theme.ColorNamePrimary:
+			return color.RGBA{R: 30, G: 144, B: 255, A: 255}
+		case theme.ColorNameForeground:
+			return color.RGBA{R: 240, G: 240, B: 240, A: 255}
+		}
+	} else {
+		switch name {
+		case theme.ColorNameBackground:
+			return color.RGBA{R: 250, G: 250, B: 250, A: 255}
+		case theme.ColorNameInputBackground, theme.ColorNameButton:
+			return color.White
+		case theme.ColorNamePrimary:
+			return color.RGBA{R: 220, G: 53, B: 69, A: 255}
+		case theme.ColorNameForeground:
+			return color.RGBA{R: 20, G: 20, B: 20, A: 255}
+		}
+	}
+
+	v := theme.VariantLight
+	if t.dark {
+		v = theme.VariantDark
+	}
+	return theme.DefaultTheme().Color(name, v)
+}
+
+func (t *customTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return theme.DefaultTheme().Font(style)
+}
+
+func (t *customTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return theme.DefaultTheme().Icon(name)
+}
+
+func (t *customTheme) Size(name fyne.ThemeSizeName) float32 {
+	return theme.DefaultTheme().Size(name)
 }

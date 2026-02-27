@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -31,18 +33,36 @@ func (r *Runner) baseCmd(ctx context.Context, args ...string) *exec.Cmd {
 		"PYTHONUTF8=1",
 		"PYTHONIOENCODING=utf-8",
 	)
+
+	cmd.Cancel = func() error {
+		if cmd.Process != nil && runtime.GOOS == "windows" {
+			tk := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid))
+			hideWindow(tk)
+			_ = tk.Run()
+		}
+		if cmd.Process != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+
 	hideWindow(cmd)
 	return cmd
 }
 
-func (r *Runner) FetchInfo(ctx context.Context, url string) (*VideoInfo, error) {
+func (r *Runner) FetchInfo(ctx context.Context, url, browser string) (*VideoInfo, error) {
 	args := []string{
 		"--no-playlist",
 		"--no-warnings",
 		"--encoding", "utf-8",
 		"--dump-single-json",
-		url,
 	}
+
+	if browser != "" && browser != "none" {
+		args = append(args, "--cookies-from-browser", browser)
+	}
+
+	args = append(args, url)
 	cmd := r.baseCmd(ctx, args...)
 
 	var out bytes.Buffer
@@ -64,7 +84,7 @@ func (r *Runner) FetchInfo(ctx context.Context, url string) (*VideoInfo, error) 
 type ProgressHandler func(p Progress)
 type LineHandler func(line string)
 
-func (r *Runner) Download(ctx context.Context, url, format, outDir string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
+func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat, browser string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
 	if format == "" {
 		return "", errors.New("format is empty")
 	}
@@ -81,7 +101,6 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 		"--fragment-retries", "10",
 		"--file-access-retries", "5",
 		"--http-chunk-size", "10M",
-		"--extractor-args", "youtube:player_client=ios,android,web",
 		"-f", format,
 		"-P", outDir,
 		"-o", "%(title).200B [%(id)s].%(ext)s",
@@ -89,11 +108,17 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 		`download:download:{"p":"%(progress._percent_str)s","eta":"%(progress.eta)s","spd":"%(progress._speed_str)s","dl":"%(progress.downloaded_bytes)s","tot":"%(progress.total_bytes)s"}` + "\n",
 	}
 
+	if browser != "" && browser != "none" {
+		args = append(args, "--cookies-from-browser", browser)
+	}
+
 	if r.FFmpegDir != "" {
-		args = append(args,
-			"--ffmpeg-location", r.FFmpegDir,
-			"--merge-output-format", "mp4",
-		)
+		args = append(args, "--ffmpeg-location", r.FFmpegDir)
+		if mergeFormat == "mp3" {
+			args = append(args, "--extract-audio", "--audio-format", "mp3")
+		} else {
+			args = append(args, "--merge-output-format", mergeFormat, "--remux-video", mergeFormat)
+		}
 	}
 
 	args = append(args, url)
@@ -112,7 +137,11 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 		return "", err
 	}
 
-	var finalFilePath string
+	var (
+		stateMu       sync.Mutex
+		finalFilePath string
+		touchedFiles  []string
+	)
 
 	handle := func(line string) {
 		line = strings.TrimSpace(strings.TrimRight(line, "\r\n"))
@@ -120,19 +149,27 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 			return
 		}
 
+		stateMu.Lock()
 		if strings.HasPrefix(line, "[download] Destination: ") {
-			finalFilePath = strings.TrimPrefix(line, "[download] Destination: ")
+			dest := strings.TrimPrefix(line, "[download] Destination: ")
+			finalFilePath = dest
+			touchedFiles = append(touchedFiles, dest)
 		} else if strings.HasPrefix(line, "[Merger] Merging formats into ") {
-			finalFilePath = strings.TrimPrefix(line, "[Merger] Merging formats into ")
-			finalFilePath = strings.Trim(finalFilePath, `"`)
+			dest := strings.TrimPrefix(line, "[Merger] Merging formats into ")
+			dest = strings.Trim(dest, `"`)
+			finalFilePath = dest
+			touchedFiles = append(touchedFiles, dest)
 		} else if strings.HasPrefix(line, "[ExtractAudio] Destination: ") {
-			finalFilePath = strings.TrimPrefix(line, "[ExtractAudio] Destination: ")
+			dest := strings.TrimPrefix(line, "[ExtractAudio] Destination: ")
+			finalFilePath = dest
+			touchedFiles = append(touchedFiles, dest)
 		} else if strings.Contains(line, "has already been downloaded") && strings.HasPrefix(line, "[download] ") {
 			parts := strings.Split(line, " has already been downloaded")
 			if len(parts) > 0 {
 				finalFilePath = strings.TrimPrefix(parts[0], "[download] ")
 			}
 		}
+		stateMu.Unlock()
 
 		if strings.HasPrefix(line, "download:") {
 			raw := strings.TrimPrefix(line, "download:")
@@ -185,7 +222,19 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 	<-done
 	<-done
 
-	if err := cmd.Wait(); err != nil {
+	err = cmd.Wait()
+
+	if ctx.Err() != nil {
+		for _, f := range touchedFiles {
+			_ = os.Remove(f)
+			_ = os.Remove(f + ".part")
+			_ = os.Remove(f + ".ytdl")
+			_ = os.Remove(f + ".temp")
+		}
+		return "", fmt.Errorf("download cancelled by user")
+	}
+
+	if err != nil {
 		return finalFilePath, fmt.Errorf("download failed: %w", err)
 	}
 
