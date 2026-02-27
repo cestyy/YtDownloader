@@ -9,6 +9,7 @@ import (
 	neturl "net/url"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -31,6 +33,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 
 	w := a.NewWindow("YtDownloader")
 	w.Resize(fyne.NewSize(1200, 740))
+	w.SetFixedSize(true)
 
 	st := &State{OutputDir: defaultDownloadsDir()}
 	outDirLabel := widget.NewLabel(st.OutputDir)
@@ -64,8 +67,17 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	btnCancel := widget.NewButton("Cancel", func() {})
 	btnCancel.Disable()
 
+	var (
+		dlMu               sync.Mutex
+		lastDownloadedFile string
+	)
+
 	btnOpenFolder := widget.NewButton("Open folder", func() {
-		_ = openFolder(st.OutputDir)
+		dlMu.Lock()
+		target := lastDownloadedFile
+		dlMu.Unlock()
+
+		_ = showFileInFolder(target, st.OutputDir)
 	})
 	btnOpenFolder.Disable()
 
@@ -76,6 +88,10 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			}
 			st.OutputDir = uri.Path()
 			outDirLabel.SetText(st.OutputDir)
+
+			dlMu.Lock()
+			lastDownloadedFile = ""
+			dlMu.Unlock()
 			btnOpenFolder.Disable()
 		}, w)
 	})
@@ -100,7 +116,6 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	}
 
 	var (
-		dlMu     sync.Mutex
 		dlCancel context.CancelFunc
 
 		progMu       sync.Mutex
@@ -158,7 +173,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			dialog.ShowError(err, w)
 			return
 		}
-		_ = openFolder(t)
+		_ = openFolderDirect(t)
 	})
 	btnToolsUpdate := widget.NewButton("Update tools", func() {})
 	btnToolsCancel := widget.NewButton("Cancel update", func() {})
@@ -234,9 +249,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		}()
 	}
 
-	btnToolsUpdate.OnTapped = func() {
-		startToolsUpdate()
-	}
+	btnToolsUpdate.OnTapped = func() { startToolsUpdate() }
 
 	btnToolsCancel.OnTapped = func() {
 		updMu.Lock()
@@ -323,10 +336,11 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		ctx, cancel := context.WithCancel(context.Background())
 		dlMu.Lock()
 		dlCancel = cancel
+		lastDownloadedFile = ""
 		dlMu.Unlock()
 
 		go func(url string) {
-			err := cli.Download(ctx, url, "bv*+ba/b", st.OutputDir,
+			resultPath, err := cli.Download(ctx, url, "best[vcodec!=none][acodec!=none]/b", st.OutputDir,
 				func(p ytdlp.Progress) {
 					_, pct := progressLine(p)
 					if pct >= 0 {
@@ -342,6 +356,9 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 
 			dlMu.Lock()
 			dlCancel = nil
+			if err == nil && resultPath != "" {
+				lastDownloadedFile = resultPath
+			}
 			dlMu.Unlock()
 			setDownloading(false)
 
@@ -357,6 +374,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			setDownloadProgress(100)
 			setStatus("Done ✅")
 			fyne.Do(func() { btnOpenFolder.Enable() })
+			playDoneSound()
 		}(u)
 	}
 
@@ -503,10 +521,11 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		ctx, cancel := context.WithCancel(context.Background())
 		dlMu.Lock()
 		dlCancel = cancel
+		lastDownloadedFile = ""
 		dlMu.Unlock()
 
 		go func(url, fmtID string) {
-			err := cli.Download(ctx, url, fmtID, st.OutputDir,
+			resultPath, err := cli.Download(ctx, url, fmtID, st.OutputDir,
 				func(p ytdlp.Progress) {
 					_, pct := progressLine(p)
 					if pct >= 0 {
@@ -522,6 +541,9 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 
 			dlMu.Lock()
 			dlCancel = nil
+			if err == nil && resultPath != "" {
+				lastDownloadedFile = resultPath
+			}
 			dlMu.Unlock()
 			setDownloading(false)
 
@@ -537,6 +559,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 			setDownloadProgress(100)
 			setStatus("Done ✅")
 			fyne.Do(func() { btnOpenFolder.Enable() })
+			playDoneSound()
 		}(u, st.SelectedFmt)
 	}
 
@@ -550,19 +573,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		btnOpenFolder,
 	)
 
-	toolsRow := container.NewHBox(
-		toolsStatus,
-		toolsBusy,
-		layout.NewSpacer(),
-		btnToolsFolder,
-		btnToolsUpdate,
-		btnToolsCancel,
-	)
-
-	btnRow := container.NewVBox(
-		container.NewHBox(btnDownload, btnBest, btnCancel, logger.Controls(w), layout.NewSpacer()),
-		toolsRow,
-	)
+	btnRow := container.NewHBox(btnDownload, btnBest, btnCancel, layout.NewSpacer())
 
 	leftTop := container.NewVBox(
 		topRow,
@@ -586,12 +597,31 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		previewImg,
 	)
 
-	logArea := container.NewBorder(widget.NewLabel("Log:"), nil, nil, nil, container.NewMax(logger.Widget()))
-	right := container.NewBorder(rightTop, nil, nil, nil, logArea)
+	right := container.NewBorder(rightTop, nil, nil, nil, nil)
 
-	split := container.NewHSplit(left, right)
-	split.Offset = 0.44
-	w.SetContent(split)
+	mainSplit := container.NewHSplit(left, right)
+	mainSplit.Offset = 0.50
+
+	settingsView := container.NewVBox(
+		widget.NewLabelWithStyle("Application Settings", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewSeparator(),
+		widget.NewLabel("Tools (yt-dlp & ffmpeg)"),
+		container.NewHBox(toolsStatus, toolsBusy),
+		container.NewHBox(btnToolsUpdate, btnToolsCancel, btnToolsFolder),
+		widget.NewSeparator(),
+		widget.NewLabel("System Logs"),
+		logger.Controls(w),
+	)
+
+	settingsLayout := container.NewBorder(settingsView, nil, nil, nil, container.NewMax(logger.Widget()))
+
+	tabs := container.NewAppTabs(
+		container.NewTabItemWithIcon("Main", theme.HomeIcon(), mainSplit),
+		container.NewTabItemWithIcon("Settings", theme.SettingsIcon(), settingsLayout),
+	)
+	tabs.SetTabLocation(container.TabLocationLeading)
+
+	w.SetContent(tabs)
 
 	var (
 		mu        sync.Mutex
@@ -692,7 +722,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 				break
 			}
 			if !loaded {
-				logger.Warn("Preview not loaded (no reachable thumbnail)")
+				logger.Warn("Preview not loaded")
 			}
 		}(url, ctx)
 	}
@@ -734,11 +764,16 @@ func emptyToDash(s string) string {
 }
 
 func parsePercent(s string) float64 {
-	s = strings.TrimSpace(strings.TrimSuffix(s, "%"))
-	if s == "" {
+	var cleaned strings.Builder
+	for _, r := range s {
+		if (r >= '0' && r <= '9') || r == '.' {
+			cleaned.WriteRune(r)
+		}
+	}
+	if cleaned.Len() == 0 {
 		return -1
 	}
-	f, err := strconv.ParseFloat(s, 64)
+	f, err := strconv.ParseFloat(cleaned.String(), 64)
 	if err != nil {
 		return -1
 	}
@@ -851,10 +886,15 @@ func loadRemoteImageResource(url string) fyne.Resource {
 	return fyne.NewStaticResource(name, bytes.Clone(b))
 }
 
-func openFolder(dir string) error {
-	if strings.TrimSpace(dir) == "" {
+func openFolderDirect(dir string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
 		return fmt.Errorf("empty dir")
 	}
+	if absDir, err := filepath.Abs(dir); err == nil {
+		dir = absDir
+	}
+
 	switch runtime.GOOS {
 	case "windows":
 		return exec.Command("explorer", dir).Start()
@@ -862,5 +902,37 @@ func openFolder(dir string) error {
 		return exec.Command("open", dir).Start()
 	default:
 		return exec.Command("xdg-open", dir).Start()
+	}
+}
+
+func showFileInFolder(filePath string, fallbackDir string) error {
+	if filePath == "" {
+		return openFolderDirect(fallbackDir)
+	}
+
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		absPath = filePath
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("explorer", "/select,", absPath).Start()
+	case "darwin":
+		return exec.Command("open", "-R", absPath).Start()
+	default:
+		dir := filepath.Dir(absPath)
+		return exec.Command("xdg-open", dir).Start()
+	}
+}
+
+func playDoneSound() {
+	switch runtime.GOOS {
+	case "windows":
+		exec.Command("powershell", "-c", "[System.Media.SystemSounds]::Asterisk.Play()").Start()
+	case "darwin":
+		exec.Command("afplay", "/System/Library/Sounds/Glass.aiff").Start()
+	case "linux":
+		exec.Command("paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga").Start()
 	}
 }

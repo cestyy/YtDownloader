@@ -64,9 +64,9 @@ func (r *Runner) FetchInfo(ctx context.Context, url string) (*VideoInfo, error) 
 type ProgressHandler func(p Progress)
 type LineHandler func(line string)
 
-func (r *Runner) Download(ctx context.Context, url, format, outDir string, onProgress ProgressHandler, onLine LineHandler) error {
+func (r *Runner) Download(ctx context.Context, url, format, outDir string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
 	if format == "" {
-		return errors.New("format is empty")
+		return "", errors.New("format is empty")
 	}
 
 	args := []string{
@@ -77,6 +77,11 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 		"--no-color",
 		"--no-warnings",
 		"-N", "8",
+		"--retries", "10",
+		"--fragment-retries", "10",
+		"--file-access-retries", "5",
+		"--http-chunk-size", "10M",
+		"--extractor-args", "youtube:player_client=ios,android,web",
 		"-f", format,
 		"-P", outDir,
 		"-o", "%(title).200B [%(id)s].%(ext)s",
@@ -96,21 +101,37 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return "", err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return "", err
 	}
+
+	var finalFilePath string
 
 	handle := func(line string) {
 		line = strings.TrimSpace(strings.TrimRight(line, "\r\n"))
 		if line == "" {
 			return
+		}
+
+		if strings.HasPrefix(line, "[download] Destination: ") {
+			finalFilePath = strings.TrimPrefix(line, "[download] Destination: ")
+		} else if strings.HasPrefix(line, "[Merger] Merging formats into ") {
+			finalFilePath = strings.TrimPrefix(line, "[Merger] Merging formats into ")
+			finalFilePath = strings.Trim(finalFilePath, `"`)
+		} else if strings.HasPrefix(line, "[ExtractAudio] Destination: ") {
+			finalFilePath = strings.TrimPrefix(line, "[ExtractAudio] Destination: ")
+		} else if strings.Contains(line, "has already been downloaded") && strings.HasPrefix(line, "[download] ") {
+			parts := strings.Split(line, " has already been downloaded")
+			if len(parts) > 0 {
+				finalFilePath = strings.TrimPrefix(parts[0], "[download] ")
+			}
 		}
 
 		if strings.HasPrefix(line, "download:") {
@@ -165,7 +186,8 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir string, onPro
 	<-done
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("download failed: %w", err)
+		return finalFilePath, fmt.Errorf("download failed: %w", err)
 	}
-	return nil
+
+	return finalFilePath, nil
 }
