@@ -138,7 +138,12 @@ func (l *UILogger) add(level LogLevel, s string) {
 	}
 
 	fyne.Do(func() {
-		line := canvas.NewText(fmt.Sprintf("%s %s | %s", e.ts.Format("15:04:05"), l.levelTag(level), e.msg), l.levelColor(level))
+		msg := e.msg
+		if len(msg) > 100 {
+			msg = msg[:97] + "..."
+		}
+
+		line := canvas.NewText(fmt.Sprintf("%s %s | %s", e.ts.Format("15:04:05"), l.levelTag(level), msg), l.levelColor(level))
 		line.TextSize = theme.TextSize()
 		line.TextStyle = fyne.TextStyle{Monospace: true}
 		line.Alignment = fyne.TextAlignLeading
@@ -163,7 +168,12 @@ func (l *UILogger) rebuild() {
 	fyne.Do(func() {
 		l.box.Objects = nil
 		for _, e := range copyItems {
-			line := canvas.NewText(fmt.Sprintf("%s %s | %s", e.ts.Format("15:04:05"), l.levelTag(e.lvl), e.msg), l.levelColor(e.lvl))
+			msg := e.msg
+			if len(msg) > 100 {
+				msg = msg[:97] + "..."
+			}
+
+			line := canvas.NewText(fmt.Sprintf("%s %s | %s", e.ts.Format("15:04:05"), l.levelTag(e.lvl), msg), l.levelColor(e.lvl))
 			line.TextSize = theme.TextSize()
 			line.TextStyle = fyne.TextStyle{Monospace: true}
 			line.Alignment = fyne.TextAlignLeading
