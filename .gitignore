@@ -7,6 +7,7 @@
 *.dylib
 *.test
 *.out
+*.zip
 
 # IDE
 .idea/
