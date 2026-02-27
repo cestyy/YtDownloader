@@ -16,21 +16,6 @@ import (
 	"time"
 )
 
-type Tools struct {
-	YtDlpPath   string
-	FfmpegPath  string
-	FfprobePath string
-	BinDir      string
-}
-
-type updateState struct {
-	CheckedAtUnix int64  `json:"checked_at_unix"`
-	YtDlpTag      string `json:"yt_dlp_tag"`
-	YtDlpSHA      string `json:"yt_dlp_sha"`
-	FFTag         string `json:"ff_tag"`
-	FFZipSHA      string `json:"ff_zip_sha"`
-}
-
 func appBinDir(appName string) (string, error) {
 	cache, err := os.UserCacheDir()
 	if err == nil && cache != "" {
@@ -91,7 +76,7 @@ func ensureFile(path string, content []byte) error {
 	return nil
 }
 
-func downloadFileVerified(ctx context.Context, url, dstPath, wantSHA string) error {
+func downloadFileVerified(ctx context.Context, url, dstPath, wantSHA string, onProgress func(float64)) error {
 	if wantSHA == "" {
 		return errors.New("empty sha256")
 	}
@@ -127,8 +112,13 @@ func downloadFileVerified(ctx context.Context, url, dstPath, wantSHA string) err
 	}
 	defer out.Close()
 
+	pw := &progressWriter{
+		total:      resp.ContentLength,
+		onProgress: onProgress,
+	}
+
 	h := sha256.New()
-	mw := io.MultiWriter(out, h)
+	mw := io.MultiWriter(out, h, pw)
 
 	if _, err := io.Copy(mw, resp.Body); err != nil {
 		_ = os.Remove(tmp)
@@ -293,7 +283,7 @@ func extractOneZipFile(zf *zip.File, dst string) error {
 	return nil
 }
 
-func ensureLatestYtDlp(ctx context.Context, dst string) (string, error) {
+func ensureLatestYtDlp(ctx context.Context, dst string, onProgress func(float64)) (string, error) {
 	sumsURL := "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
 	exeURL := "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 
@@ -312,13 +302,13 @@ func ensureLatestYtDlp(ctx context.Context, dst string) (string, error) {
 		}
 	}
 
-	if err := downloadFileVerified(ctx, exeURL, dst, sum); err != nil {
+	if err := downloadFileVerified(ctx, exeURL, dst, sum, onProgress); err != nil {
 		return "", fmt.Errorf("yt-dlp: download exe: %w", err)
 	}
 	return sum, nil
 }
 
-func ensureLatestFFmpegWin64(ctx context.Context, binDir string) (string, error) {
+func ensureLatestFFmpegWin64(ctx context.Context, binDir string, onProgress func(float64)) (string, error) {
 	zipName := "ffmpeg-master-latest-win64-gpl.zip"
 	checksURL := "https://github.com/btbn/ffmpeg-builds/releases/latest/download/checksums.sha256"
 	zipURL := "https://github.com/btbn/ffmpeg-builds/releases/latest/download/" + zipName
@@ -339,7 +329,7 @@ func ensureLatestFFmpegWin64(ctx context.Context, binDir string) (string, error)
 	}
 
 	zipPath := filepath.Join(binDir, "ffmpeg.zip")
-	if err := downloadFileVerified(ctx, zipURL, zipPath, zipSHA); err != nil {
+	if err := downloadFileVerified(ctx, zipURL, zipPath, zipSHA, onProgress); err != nil {
 		return "", fmt.Errorf("ffmpeg: download zip: %w", err)
 	}
 	if err := extractFFmpegZip(zipPath, binDir); err != nil {
@@ -355,7 +345,7 @@ func ensureLatestFFmpegWin64(ctx context.Context, binDir string) (string, error)
 	return zipSHA, nil
 }
 
-func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool) (*Tools, error) {
+func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool, onProgress func(task string, pct float64)) (*Tools, error) {
 	dir, err := appBinDir(appName)
 	if err != nil {
 		return nil, err
@@ -380,7 +370,11 @@ func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool)
 		newState := st
 		newState.CheckedAtUnix = now
 
-		if sum, err := ensureLatestYtDlp(ctx, t.YtDlpPath); err == nil {
+		if sum, err := ensureLatestYtDlp(ctx, t.YtDlpPath, func(pct float64) {
+			if onProgress != nil {
+				onProgress("Downloadint yt-dlp...", pct)
+			}
+		}); err == nil {
 			newState.YtDlpTag = "latest"
 			newState.YtDlpSHA = sum
 		} else {
@@ -390,7 +384,11 @@ func EnsureToolsAutoUpdate(ctx context.Context, appName string, withFFmpeg bool)
 		}
 
 		if withFFmpeg {
-			if zipSHA, err := ensureLatestFFmpegWin64(ctx, dir); err == nil {
+			if zipSHA, err := ensureLatestFFmpegWin64(ctx, dir, func(pct float64) {
+				if onProgress != nil {
+					onProgress("Downloading FFmpeg...", pct)
+				}
+			}); err == nil {
 				newState.FFTag = "latest"
 				newState.FFZipSHA = zipSHA
 			} else {

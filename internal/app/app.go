@@ -70,13 +70,15 @@ func Run() {
 		boot.Resize(fyne.NewSize(440, 160))
 		boot.SetFixedSize(true)
 
-		lbl := widget.NewLabel("Downloading tools (yt-dlp + ffmpeg)…")
-		bar := widget.NewProgressBarInfinite()
-		bar.Start()
+		lbl := widget.NewLabel("Downloading tools (yt-dlp + ffmpeg) to C:/Users/<USER>/AppData/Local/<YtDownloader>/bin/")
+		progress := widget.NewProgressBar()
+		progress.Min, progress.Max = 0, 100
+		progress.SetValue(0)
+
 		msg := widget.NewLabel("This is needed only on first run.")
 		btnCancel := widget.NewButton("Cancel", func() {})
 
-		boot.SetContent(container.NewVBox(lbl, bar, msg, btnCancel))
+		boot.SetContent(container.NewVBox(lbl, progress, msg, btnCancel))
 		boot.Show()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -88,11 +90,12 @@ func Run() {
 
 		go func() {
 			defer cancel()
-			t, derr := bundled.EnsureToolsAutoUpdate(ctx, "YtDownloader", true)
+			t, derr := bundled.EnsureToolsAutoUpdate(ctx, "YtDownloader", true, func(task string, pct float64) {
+				progress.SetValue(pct * 100)
+			})
 			if derr != nil {
 				log.Printf("ERROR: EnsureToolsAutoUpdate: %v", derr)
 				fyne.Do(func() {
-					bar.Stop()
 					dialog.ShowError(derr, boot)
 					lbl.SetText("Failed to download tools")
 					msg.SetText("Check internet access and try again.")
@@ -134,7 +137,7 @@ func Run() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		if _, err := bundled.EnsureToolsAutoUpdate(ctx, "YtDownloader", false); err != nil {
+		if _, err := bundled.EnsureToolsAutoUpdate(ctx, "YtDownloader", false, nil); err != nil {
 			log.Printf("WARN: tools auto-update: %v", err)
 		} else {
 			log.Printf("INFO: tools updated (background)")
