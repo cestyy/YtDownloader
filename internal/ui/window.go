@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"YtDownloader/internal/bundled"
 	"YtDownloader/internal/ytdlp"
 
 	"fyne.io/fyne/v2"
@@ -26,6 +27,8 @@ import (
 )
 
 func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
+	const appName = "YtDownloader"
+
 	w := a.NewWindow("YtDownloader")
 	w.Resize(fyne.NewSize(1200, 740))
 
@@ -138,7 +141,120 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	var formatList *widget.List
 	var formatListTapBlock bool
 
+	var (
+		updMu       sync.Mutex
+		updCancel   context.CancelFunc
+		updRunning  bool
+		downloading bool
+	)
+
+	toolsStatus := widget.NewLabel("Tools: ready")
+	toolsBusy := widget.NewProgressBarInfinite()
+	toolsBusy.Hide()
+
+	btnToolsFolder := widget.NewButton("Tools folder", func() {
+		t, err := bundled.AppPathsForUI(appName)
+		if err != nil {
+			dialog.ShowError(err, w)
+			return
+		}
+		_ = openFolder(t)
+	})
+	btnToolsUpdate := widget.NewButton("Update tools", func() {})
+	btnToolsCancel := widget.NewButton("Cancel update", func() {})
+
+	btnToolsCancel.Disable()
+
+	setToolsBusy := func(on bool, msg string) {
+		fyne.Do(func() {
+			if msg != "" {
+				toolsStatus.SetText(msg)
+			}
+			if on {
+				toolsBusy.Show()
+				toolsBusy.Start()
+				btnToolsUpdate.Disable()
+				btnToolsCancel.Enable()
+			} else {
+				toolsBusy.Stop()
+				toolsBusy.Hide()
+				btnToolsUpdate.Enable()
+				btnToolsCancel.Disable()
+			}
+		})
+	}
+
+	startToolsUpdate := func() {
+		updMu.Lock()
+		if updRunning || downloading {
+			updMu.Unlock()
+			return
+		}
+		updRunning = true
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		updCancel = cancel
+		updMu.Unlock()
+
+		setToolsBusy(true, "Tools: updating…")
+		logger.Dbg("--- TOOLS UPDATE ---")
+
+		go func() {
+			tools, err := bundled.EnsureToolsAutoUpdate(ctx, appName, true)
+
+			updMu.Lock()
+			updRunning = false
+			c := updCancel
+			updCancel = nil
+			updMu.Unlock()
+			if c != nil {
+				c()
+			}
+
+			if err != nil {
+				setToolsBusy(false, "Tools: update failed")
+				fyne.Do(func() { dialog.ShowError(err, w) })
+				logger.Warn("Tools update failed: " + err.Error())
+				return
+			}
+
+			updMu.Lock()
+			if downloading {
+				updMu.Unlock()
+				setToolsBusy(false, "Tools: updated (will apply after download)")
+				logger.Info("Tools updated, will apply after current download")
+				return
+			}
+			updMu.Unlock()
+
+			cli.YtDlpPath = tools.YtDlpPath
+			cli.FFmpegDir = tools.BinDir
+
+			setToolsBusy(false, "Tools: updated")
+			logger.Info("Tools updated")
+		}()
+	}
+
+	btnToolsUpdate.OnTapped = func() {
+		startToolsUpdate()
+	}
+
+	btnToolsCancel.OnTapped = func() {
+		updMu.Lock()
+		c := updCancel
+		updCancel = nil
+		updMu.Unlock()
+		if c != nil {
+			c()
+			setToolsBusy(false, "Tools: update cancelled")
+			logger.Warn("Tools update cancelled")
+		}
+	}
+
 	setDownloading := func(d bool) {
+		updMu.Lock()
+		downloading = d
+		updMu.Unlock()
+
 		fyne.Do(func() {
 			if d {
 				formatListTapBlock = true
@@ -148,6 +264,8 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 				btnCancel.Enable()
 				btnOpenFolder.Disable()
 				urlEntry.Disable()
+				btnToolsUpdate.Disable()
+				btnToolsFolder.Disable()
 				if filterEntry != nil {
 					filterEntry.Disable()
 				}
@@ -157,6 +275,13 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 				btnChooseDir.Enable()
 				btnCancel.Disable()
 				urlEntry.Enable()
+				btnToolsFolder.Enable()
+				updMu.Lock()
+				running := updRunning
+				updMu.Unlock()
+				if !running {
+					btnToolsUpdate.Enable()
+				}
 				if filterEntry != nil {
 					filterEntry.Enable()
 				}
@@ -425,7 +550,19 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		btnOpenFolder,
 	)
 
-	btnRow := container.NewHBox(btnDownload, btnBest, btnCancel, logger.Controls(w), layout.NewSpacer())
+	toolsRow := container.NewHBox(
+		toolsStatus,
+		toolsBusy,
+		layout.NewSpacer(),
+		btnToolsFolder,
+		btnToolsUpdate,
+		btnToolsCancel,
+	)
+
+	btnRow := container.NewVBox(
+		container.NewHBox(btnDownload, btnBest, btnCancel, logger.Controls(w), layout.NewSpacer()),
+		toolsRow,
+	)
 
 	leftTop := container.NewVBox(
 		topRow,
