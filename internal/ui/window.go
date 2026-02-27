@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"YtDownloader/internal/bundled"
@@ -929,7 +930,9 @@ func showFileInFolder(filePath string, fallbackDir string) error {
 func playDoneSound() {
 	switch runtime.GOOS {
 	case "windows":
-		exec.Command("powershell", "-c", "[System.Media.SystemSounds]::Asterisk.Play()").Start()
+		cmd := exec.Command("powershell", "-c", "[System.Media.SystemSounds]::Asterisk.Play()")
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		cmd.Start()
 	case "darwin":
 		exec.Command("afplay", "/System/Library/Sounds/Glass.aiff").Start()
 	case "linux":
