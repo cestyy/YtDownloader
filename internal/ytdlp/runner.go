@@ -56,7 +56,7 @@ func (r *Runner) baseCmd(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-func (r *Runner) FetchInfo(ctx context.Context, url, browser string) (*VideoInfo, error) {
+func (r *Runner) FetchInfo(ctx context.Context, url, browser, cookiesFile string) (*VideoInfo, error) {
 	args := []string{
 		"--no-warnings",
 		"--encoding", "utf-8",
@@ -69,7 +69,10 @@ func (r *Runner) FetchInfo(ctx context.Context, url, browser string) (*VideoInfo
 		args = append(args, "--no-playlist")
 	}
 
-	if browser != "" && browser != "none" {
+	// Умный выбор куки: файл в приоритете
+	if cookiesFile != "" {
+		args = append(args, "--cookies", cookiesFile)
+	} else if browser != "" && browser != "none" {
 		args = append(args, "--cookies-from-browser", browser)
 	}
 
@@ -95,7 +98,7 @@ func (r *Runner) FetchInfo(ctx context.Context, url, browser string) (*VideoInfo
 type ProgressHandler func(p Progress)
 type LineHandler func(line string)
 
-func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat, browser string, allowPlaylist, useSponsorBlock bool, nameTemplate string, selectedItems string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
+func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat, browser, cookiesFile string, allowPlaylist, useSponsorBlock bool, nameTemplate string, selectedItems string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
 	if format == "" {
 		return "", errors.New("format is empty")
 	}
@@ -139,7 +142,10 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 		args = append(args, "--playlist-items", selectedItems)
 	}
 
-	if browser != "" && browser != "none" {
+	// Умный выбор куки: файл в приоритете
+	if cookiesFile != "" {
+		args = append(args, "--cookies", cookiesFile)
+	} else if browser != "" && browser != "none" {
 		args = append(args, "--cookies-from-browser", browser)
 	}
 

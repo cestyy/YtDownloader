@@ -37,6 +37,27 @@ func (mw *MainWindow) bindEvents() {
 	mw.BtnToolsUpdate.OnTapped = mw.onToolsUpdate
 	mw.BtnToolsCancel.OnTapped = mw.onToolsCancel
 	mw.BtnToolsFolder.OnTapped = mw.onToolsFolder
+
+	// Привязка новых кнопок
+	mw.BtnCookiesSelect.OnTapped = mw.onSelectCookies
+	mw.BtnCookiesClear.OnTapped = mw.onClearCookies
+}
+
+func (mw *MainWindow) onSelectCookies() {
+	dialog.ShowFileOpen(func(uc fyne.URIReadCloser, err error) {
+		if err != nil || uc == nil {
+			return
+		}
+		mw.CookiesFilePath = uc.URI().Path()
+		mw.CookiesFileLabel.SetText(mw.CookiesFilePath)
+		mw.BtnCookiesClear.Enable()
+	}, mw.Window)
+}
+
+func (mw *MainWindow) onClearCookies() {
+	mw.CookiesFilePath = ""
+	mw.CookiesFileLabel.SetText("No cookies.txt selected")
+	mw.BtnCookiesClear.Disable()
 }
 
 func (mw *MainWindow) setStatus(s string) {
@@ -109,6 +130,8 @@ func (mw *MainWindow) setDownloading(d bool) {
 			mw.FormatSelect.Disable()
 			mw.ThemeSelect.Disable()
 			mw.BrowserSelect.Disable()
+			mw.BtnCookiesSelect.Disable()
+			mw.BtnCookiesClear.Disable()
 			mw.ResSelect.Disable()
 			mw.ExtSelect.Disable()
 			mw.NamingSelect.Disable()
@@ -121,11 +144,16 @@ func (mw *MainWindow) setDownloading(d bool) {
 			mw.BtnBest.Enable()
 			mw.BtnChooseDir.Enable()
 			mw.BtnCancel.Disable()
+			mw.BtnOpenFolder.Enable()
 			mw.UrlEntry.Enable()
 			mw.BtnToolsFolder.Enable()
 			mw.FormatSelect.Enable()
 			mw.ThemeSelect.Enable()
 			mw.BrowserSelect.Enable()
+			mw.BtnCookiesSelect.Enable()
+			if mw.CookiesFilePath != "" {
+				mw.BtnCookiesClear.Enable()
+			}
 			mw.ResSelect.Enable()
 			mw.ExtSelect.Enable()
 			mw.NamingSelect.Enable()
@@ -224,7 +252,7 @@ func (mw *MainWindow) startProcess(url string) {
 	mw.Logger.Dbg("--- PROCESS URL --- " + url)
 
 	go func(myURL string, myCtx context.Context) {
-		info, err := mw.Cli.FetchInfo(myCtx, myURL, mw.BrowserSelect.Selected)
+		info, err := mw.Cli.FetchInfo(myCtx, myURL, mw.BrowserSelect.Selected, mw.CookiesFilePath)
 		if myCtx.Err() != nil {
 			return
 		}
@@ -529,7 +557,7 @@ func (mw *MainWindow) startDownloadRoutine(u, dlFormat string) {
 			})
 		}
 
-		resultPath, err := mw.Cli.Download(ctx, u, dlFormat, targetDir, mw.FormatSelect.Selected, mw.BrowserSelect.Selected, allowPl, useSb, naming, selectedItemsStr,
+		resultPath, err := mw.Cli.Download(ctx, u, dlFormat, targetDir, mw.FormatSelect.Selected, mw.BrowserSelect.Selected, mw.CookiesFilePath, allowPl, useSb, naming, selectedItemsStr,
 			func(p ytdlp.Progress) {
 				line, pct := mw.progressLine(p)
 				if pct >= 0 {

@@ -61,6 +61,8 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 		widget.NewLabel("Output Format (video/audio)"), mw.FormatSelect,
 		widget.NewSeparator(),
 		widget.NewLabel("Bypass YouTube Bot Check"), mw.BrowserSelect,
+		container.NewHBox(mw.BtnCookiesSelect, mw.BtnCookiesClear),
+		mw.CookiesFileLabel,
 		widget.NewSeparator(),
 		widget.NewLabel("Tools (yt-dlp & ffmpeg)"),
 		container.NewHBox(mw.ToolsStatus, mw.ToolsBusy),
