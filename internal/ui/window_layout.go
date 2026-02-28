@@ -22,7 +22,8 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 		widget.NewLabel("Save to:"), mw.OutDirLabel,
 		layout.NewSpacer(), mw.BtnChooseDir, mw.BtnOpenFolder,
 	)
-	btnRow := container.NewHBox(mw.BtnDownload, mw.BtnBest, mw.BtnCancel, layout.NewSpacer())
+
+	btnRow := container.NewHBox(mw.BtnDownload, mw.BtnBest, layout.NewSpacer())
 
 	leftTop := container.NewVBox(
 		topRow, dirRow, btnRow,
@@ -39,13 +40,17 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	mw.RightPanelCards = container.NewMax(mw.PreviewContainer)
 
 	rightTop := container.NewVBox(
-		widget.NewLabel("Status:"), mw.Status, mw.DownloadProgress, mw.ProgressInfo,
+		widget.NewLabel("Status:"), mw.Status,
 		widget.NewSeparator(),
 	)
 	right := container.NewBorder(rightTop, nil, nil, nil, mw.RightPanelCards)
 
 	mainSplit := container.NewHSplit(left, right)
 	mainSplit.Offset = 0.50
+
+	queueScroll := container.NewVScroll(mw.QueueBox)
+	queueTop := container.NewHBox(widget.NewLabelWithStyle("Active & Queued Downloads", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), layout.NewSpacer(), mw.BtnClearQueue)
+	queueLayout := container.NewBorder(queueTop, nil, nil, nil, queueScroll)
 
 	settingsView := container.NewVBox(
 		widget.NewLabelWithStyle("Application Settings", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -79,12 +84,14 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 
 	logsLayout := container.NewBorder(logsTop, nil, nil, nil, container.NewMax(mw.Logger.Widget()))
 
-	tabs := container.NewAppTabs(
+	mw.DownloadsTab = container.NewTabItemWithIcon("Downloads", theme.DownloadIcon(), queueLayout)
+	mw.Tabs = container.NewAppTabs(
 		container.NewTabItemWithIcon("Main", theme.HomeIcon(), mainSplit),
+		mw.DownloadsTab,
 		container.NewTabItemWithIcon("Settings", theme.SettingsIcon(), settingsLayout),
 		container.NewTabItemWithIcon("Logs", theme.DocumentIcon(), logsLayout),
 	)
-	tabs.SetTabLocation(container.TabLocationLeading)
+	mw.Tabs.SetTabLocation(container.TabLocationLeading)
 
-	return container.NewMax(tabs)
+	return container.NewMax(mw.Tabs)
 }
