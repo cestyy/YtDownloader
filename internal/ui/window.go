@@ -43,6 +43,11 @@ type MainWindow struct {
 	CheckRedownload   *widget.Check
 	NamingSelect      *widget.Select
 
+	CookiesFileLabel *widget.Label
+	CookiesFilePath  string
+	BtnCookiesSelect *widget.Button
+	BtnCookiesClear  *widget.Button
+
 	PlaylistTitle    string
 	PlaylistEntries  []ytdlp.PlaylistEntry
 	PlaylistChecks   []bool
@@ -149,6 +154,12 @@ func (mw *MainWindow) setupWidgets() {
 
 	mw.BrowserSelect = widget.NewSelect([]string{"none", "chrome", "edge", "firefox", "opera", "brave", "safari", "vivaldi"}, nil)
 	mw.BrowserSelect.SetSelected("none")
+
+	mw.CookiesFileLabel = widget.NewLabel("No cookies.txt selected")
+	mw.CookiesFileLabel.Truncation = fyne.TextTruncateEllipsis
+	mw.BtnCookiesSelect = widget.NewButton("Select cookies.txt", nil)
+	mw.BtnCookiesClear = widget.NewButton("Clear", nil)
+	mw.BtnCookiesClear.Disable()
 
 	savedTheme := mw.App.Preferences().StringWithFallback("Theme", "Dark")
 	mw.ThemeSelect = widget.NewSelect([]string{"Dark", "Light", "Pink", "Ocean"}, func(s string) {
