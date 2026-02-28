@@ -21,6 +21,12 @@ type Runner struct {
 	FFmpegDir string
 }
 
+type PlaylistEntry struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Uploader string `json:"uploader"`
+}
+
 func hideWindow(cmd *exec.Cmd) {
 	if runtime.GOOS == "windows" {
 		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -52,10 +58,15 @@ func (r *Runner) baseCmd(ctx context.Context, args ...string) *exec.Cmd {
 
 func (r *Runner) FetchInfo(ctx context.Context, url, browser string) (*VideoInfo, error) {
 	args := []string{
-		"--no-playlist",
 		"--no-warnings",
 		"--encoding", "utf-8",
 		"--dump-single-json",
+	}
+
+	if strings.Contains(url, "list=") {
+		args = append(args, "--flat-playlist")
+	} else {
+		args = append(args, "--no-playlist")
 	}
 
 	if browser != "" && browser != "none" {
@@ -84,13 +95,12 @@ func (r *Runner) FetchInfo(ctx context.Context, url, browser string) (*VideoInfo
 type ProgressHandler func(p Progress)
 type LineHandler func(line string)
 
-func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat, browser string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
+func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat, browser string, allowPlaylist, useSponsorBlock bool, nameTemplate string, selectedItems string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
 	if format == "" {
 		return "", errors.New("format is empty")
 	}
 
 	args := []string{
-		"--no-playlist",
 		"--encoding", "utf-8",
 		"--newline",
 		"--progress",
@@ -101,12 +111,33 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 		"--fragment-retries", "10",
 		"--file-access-retries", "5",
 		"--http-chunk-size", "10M",
-		"--extractor-args", "youtube:player_client=tv,web",
 		"-f", format,
 		"-P", outDir,
 		"-o", "%(title).200B [%(id)s].%(ext)s",
 		"--progress-template",
 		`download:download:{"p":"%(progress._percent_str)s","eta":"%(progress.eta)s","spd":"%(progress._speed_str)s","dl":"%(progress.downloaded_bytes)s","tot":"%(progress.total_bytes)s"}` + "\n",
+	}
+
+	if !allowPlaylist {
+		args = append(args, "--no-playlist")
+	} else {
+		args = append(args, "--yes-playlist")
+	}
+
+	if useSponsorBlock {
+		args = append(args, "--sponsorblock-remove", "sponsor,intro,outro")
+	}
+
+	fileNameTemplate := "%(playlist_title|)s%(playlist_title&/|)s%(title).200B [%(id)s].%(ext)s"
+	if nameTemplate == "Author - Title" {
+		fileNameTemplate = "%(playlist_title|)s%(playlist_title&/|)s%(uploader)s - %(title).200B.%(ext)s"
+	} else if nameTemplate == "Title (Year)" {
+		fileNameTemplate = "%(playlist_title|)s%(playlist_title&/|)s%(title).200B (%(upload_date>%Y)s).%(ext)s"
+	}
+	args = append(args, "-o", fileNameTemplate)
+
+	if selectedItems != "" {
+		args = append(args, "--playlist-items", selectedItems)
 	}
 
 	if browser != "" && browser != "none" {

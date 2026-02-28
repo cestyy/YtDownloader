@@ -8,13 +8,15 @@ type Thumbnail struct {
 }
 
 type VideoInfo struct {
-	ID         string      `json:"id"`
-	Title      string      `json:"title"`
-	WebpageURL string      `json:"webpage_url"`
-	Thumbnail  string      `json:"thumbnail"`
-	Thumbnails []Thumbnail `json:"thumbnails"`
-	Duration   float64     `json:"duration"`
-	Formats    []Format    `json:"formats"`
+	Type       string          `json:"_type"`
+	Entries    []PlaylistEntry `json:"entries"`
+	ID         string          `json:"id"`
+	Title      string          `json:"title"`
+	WebpageURL string          `json:"webpage_url"`
+	Thumbnail  string          `json:"thumbnail"`
+	Thumbnails []Thumbnail     `json:"thumbnails"`
+	Duration   float64         `json:"duration"`
+	Formats    []Format        `json:"formats"`
 }
 
 type Format struct {

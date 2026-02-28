@@ -1,6 +1,7 @@
 package app
 
 import (
+	ui "YtDownloader/internal/ui"
 	"context"
 	"log"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"YtDownloader/internal/bundled"
-	ui "YtDownloader/internal/ui"
 	"YtDownloader/internal/ytdlp"
 
 	"fyne.io/fyne/v2"
