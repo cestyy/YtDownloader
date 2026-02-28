@@ -199,7 +199,6 @@ func (mw *MainWindow) resetUIForEmpty() {
 		mw.Busy.Hide()
 		mw.setStatus("Ready")
 		mw.setDownloadProgress(0)
-		mw.BtnOpenFolder.Disable()
 	})
 }
 
@@ -292,7 +291,6 @@ func (mw *MainWindow) startProcess(url string) {
 				} else {
 					mw.PreviewTitle.SetText("—")
 				}
-				mw.BtnOpenFolder.Disable()
 			})
 
 			for _, thumbURL := range pickThumbCandidates(info) {
@@ -386,7 +384,6 @@ func (mw *MainWindow) onChooseDir() {
 		mw.DlMu.Lock()
 		mw.LastDownloadedFile = ""
 		mw.DlMu.Unlock()
-		mw.BtnOpenFolder.Disable()
 	}, mw.Window)
 }
 
@@ -430,6 +427,7 @@ func (mw *MainWindow) handleDownloadResult(ctx context.Context, resultPath strin
 			mw.setStatus("Cancelled")
 		} else {
 			mw.setStatus("Download failed")
+			mw.App.SendNotification(fyne.NewNotification("Download Failed", "An error occurred during download."))
 		}
 		mw.setDownloadProgress(0)
 		return
@@ -439,6 +437,24 @@ func (mw *MainWindow) handleDownloadResult(ctx context.Context, resultPath strin
 	mw.setStatus("Done ✅")
 	fyne.Do(func() { mw.BtnOpenFolder.Enable() })
 	playDoneSound()
+
+	var notifTitle, notifBody string
+
+	if len(mw.PlaylistEntries) > 0 {
+		notifTitle = "Playlist Downloaded ✅"
+		notifBody = mw.PlaylistTitle
+		if notifBody == "" {
+			notifBody = "All selected videos have been downloaded."
+		}
+	} else {
+		notifTitle = "Video Downloaded ✅"
+		notifBody = mw.PreviewTitle.Text
+		if notifBody == "—" || notifBody == "" {
+			notifBody = "Your video has finished downloading."
+		}
+	}
+
+	mw.App.SendNotification(fyne.NewNotification(notifTitle, notifBody))
 }
 
 func (mw *MainWindow) startDownloadRoutine(u, dlFormat string) {

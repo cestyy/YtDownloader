@@ -162,7 +162,6 @@ func (mw *MainWindow) setupWidgets() {
 	mw.BtnCancel = widget.NewButton("Cancel", nil)
 	mw.BtnCancel.Disable()
 	mw.BtnOpenFolder = widget.NewButton("Open folder", nil)
-	mw.BtnOpenFolder.Disable()
 	mw.BtnChooseDir = widget.NewButton("Select Directory", nil)
 	mw.BtnBest = widget.NewButton("Download best", nil)
 
