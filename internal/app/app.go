@@ -1,7 +1,9 @@
 package app
 
 import (
+	ui "YtDownloader/internal/ui"
 	"context"
+	_ "embed"
 	"log"
 	"os"
 	"path/filepath"
@@ -9,7 +11,6 @@ import (
 	"time"
 
 	"YtDownloader/internal/bundled"
-	ui "YtDownloader/internal/ui"
 	"YtDownloader/internal/ytdlp"
 
 	"fyne.io/fyne/v2"
@@ -18,6 +19,9 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 )
+
+//go:embed logo.png
+var appIconBytes []byte
 
 func initFileLogging(appName string) (closer func(), logPath string, err error) {
 	cfg, err := os.UserConfigDir()
@@ -62,6 +66,9 @@ func Run() {
 	}()
 
 	a := fyneapp.NewWithID("com.cessttyy.ytDownloader")
+	myIcon := fyne.NewStaticResource("logo.png", appIconBytes)
+	a.SetIcon(myIcon)
+
 	applyEmbeddedFont(a)
 
 	tools, err := bundled.EnsureToolsFast("YtDownloader", true)
