@@ -31,16 +31,37 @@ func (mw *MainWindow) bindEvents() {
 	mw.FormatList.OnSelected = mw.onFormatSelected
 	mw.BtnOpenFolder.OnTapped = mw.onOpenFolder
 	mw.BtnChooseDir.OnTapped = mw.onChooseDir
-	mw.BtnCancel.OnTapped = mw.onCancel
+
 	mw.BtnBest.OnTapped = mw.onDownloadBest
 	mw.BtnDownload.OnTapped = mw.onDownloadSelected
 	mw.BtnToolsUpdate.OnTapped = mw.onToolsUpdate
 	mw.BtnToolsCancel.OnTapped = mw.onToolsCancel
 	mw.BtnToolsFolder.OnTapped = mw.onToolsFolder
 
-	// Привязка новых кнопок
 	mw.BtnCookiesSelect.OnTapped = mw.onSelectCookies
 	mw.BtnCookiesClear.OnTapped = mw.onClearCookies
+}
+
+func (mw *MainWindow) updateDownloadsBadge() {
+	mw.JobsMu.Lock()
+	count := 0
+	for _, j := range mw.Jobs {
+		if j.Status == "Queued" || j.Status == "Downloading..." || j.Status == "Starting..." {
+			count++
+		}
+	}
+	mw.JobsMu.Unlock()
+
+	fyne.Do(func() {
+		if mw.DownloadsTab != nil && mw.Tabs != nil {
+			if count > 0 {
+				mw.DownloadsTab.Text = fmt.Sprintf("Downloads (%d)", count)
+			} else {
+				mw.DownloadsTab.Text = "Downloads"
+			}
+			mw.Tabs.Refresh()
+		}
+	})
 }
 
 func (mw *MainWindow) onSelectCookies() {
@@ -62,21 +83,6 @@ func (mw *MainWindow) onClearCookies() {
 
 func (mw *MainWindow) setStatus(s string) {
 	fyne.Do(func() { mw.Status.SetText(s) })
-}
-
-func (mw *MainWindow) setDownloadProgress(v float64) {
-	fyne.Do(func() { mw.DownloadProgress.SetValue(v) })
-}
-
-func (mw *MainWindow) setProgressInfo(spd, eta string) {
-	fyne.Do(func() {
-		if spd == "" && eta == "" {
-			mw.ProgressInfo.SetText("")
-		} else {
-			etaSec, _ := strconv.ParseFloat(eta, 64)
-			mw.ProgressInfo.SetText(fmt.Sprintf("Speed: %s | ETA: %s", emptyToDash(spd), formatDuration(etaSec)))
-		}
-	})
 }
 
 func (mw *MainWindow) progressLine(p ytdlp.Progress) (string, float64) {
@@ -111,68 +117,6 @@ func (mw *MainWindow) resetProgressThrottle() {
 	mw.ProgMu.Unlock()
 }
 
-func (mw *MainWindow) setDownloading(d bool) {
-	mw.UpdMu.Lock()
-	mw.Downloading = d
-	mw.UpdMu.Unlock()
-
-	fyne.Do(func() {
-		if d {
-			mw.FormatListTapBlock = true
-			mw.BtnDownload.Disable()
-			mw.BtnBest.Disable()
-			mw.BtnChooseDir.Disable()
-			mw.BtnCancel.Enable()
-			mw.BtnOpenFolder.Disable()
-			mw.UrlEntry.Disable()
-			mw.BtnToolsUpdate.Disable()
-			mw.BtnToolsFolder.Disable()
-			mw.FormatSelect.Disable()
-			mw.ThemeSelect.Disable()
-			mw.BrowserSelect.Disable()
-			mw.BtnCookiesSelect.Disable()
-			mw.BtnCookiesClear.Disable()
-			mw.ResSelect.Disable()
-			mw.ExtSelect.Disable()
-			mw.NamingSelect.Disable()
-			mw.CheckSponsorBlock.Disable()
-			mw.CheckRedownload.Disable()
-			mw.BtnSelectAll.Disable()
-			mw.BtnUnselectAll.Disable()
-		} else {
-			mw.FormatListTapBlock = false
-			mw.BtnBest.Enable()
-			mw.BtnChooseDir.Enable()
-			mw.BtnCancel.Disable()
-			mw.BtnOpenFolder.Enable()
-			mw.UrlEntry.Enable()
-			mw.BtnToolsFolder.Enable()
-			mw.FormatSelect.Enable()
-			mw.ThemeSelect.Enable()
-			mw.BrowserSelect.Enable()
-			mw.BtnCookiesSelect.Enable()
-			if mw.CookiesFilePath != "" {
-				mw.BtnCookiesClear.Enable()
-			}
-			mw.ResSelect.Enable()
-			mw.ExtSelect.Enable()
-			mw.NamingSelect.Enable()
-			mw.CheckSponsorBlock.Enable()
-			mw.CheckRedownload.Enable()
-			mw.BtnSelectAll.Enable()
-			mw.BtnUnselectAll.Enable()
-			mw.UpdMu.Lock()
-			if !mw.UpdRunning {
-				mw.BtnToolsUpdate.Enable()
-			}
-			mw.UpdMu.Unlock()
-			if strings.TrimSpace(mw.State.SelectedFmt) != "" || len(mw.PlaylistEntries) > 0 {
-				mw.BtnDownload.Enable()
-			}
-		}
-	})
-}
-
 func (mw *MainWindow) onUrlChanged(s string) {
 	u := strings.TrimSpace(s)
 	mw.ProcessMu.Lock()
@@ -201,6 +145,7 @@ func (mw *MainWindow) onUrlChanged(s string) {
 func (mw *MainWindow) resetUIForEmpty() {
 	fyne.Do(func() {
 		mw.BtnDownload.Disable()
+		mw.BtnBest.Disable()
 		mw.State.SelectedFmt = ""
 		mw.FormatsAll = nil
 		mw.FormatsView = nil
@@ -221,12 +166,14 @@ func (mw *MainWindow) resetUIForEmpty() {
 		mw.ExtSelect.SetSelected("All")
 		mw.FormatList.UnselectAll()
 		mw.FormatList.Refresh()
+
 		mw.PreviewTitle.SetText("—")
 		mw.PreviewImg.Resource = nil
+		mw.PreviewImg.Hide()
 		mw.PreviewImg.Refresh()
+
 		mw.Busy.Hide()
 		mw.setStatus("Ready")
-		mw.setDownloadProgress(0)
 	})
 }
 
@@ -243,9 +190,11 @@ func (mw *MainWindow) startProcess(url string) {
 	fyne.Do(func() {
 		mw.Busy.Show()
 		mw.BtnDownload.Disable()
+		mw.BtnBest.Disable()
 		mw.State.SelectedFmt = ""
 		mw.setStatus("Loading…")
 		mw.PreviewImg.Resource = nil
+		mw.PreviewImg.Hide()
 		mw.PreviewImg.Refresh()
 	})
 
@@ -319,6 +268,7 @@ func (mw *MainWindow) startProcess(url string) {
 				} else {
 					mw.PreviewTitle.SetText("—")
 				}
+				mw.BtnBest.Enable()
 			})
 
 			for _, thumbURL := range pickThumbCandidates(info) {
@@ -326,6 +276,7 @@ func (mw *MainWindow) startProcess(url string) {
 					fyne.Do(func() {
 						if strings.TrimSpace(mw.UrlEntry.Text) == myURL {
 							mw.PreviewImg.Resource = res
+							mw.PreviewImg.Show()
 							mw.PreviewImg.Refresh()
 						}
 					})
@@ -409,97 +360,39 @@ func (mw *MainWindow) onChooseDir() {
 		}
 		mw.State.OutputDir = uri.Path()
 		mw.OutDirLabel.SetText(mw.State.OutputDir)
-		mw.DlMu.Lock()
-		mw.LastDownloadedFile = ""
-		mw.DlMu.Unlock()
 	}, mw.Window)
 }
 
-func (mw *MainWindow) onCancel() {
-	mw.DlMu.Lock()
-	if mw.DlCancel != nil {
-		mw.Logger.Warn("Cancelling download…")
-		mw.DlCancel()
-		mw.DlCancel = nil
+func (mw *MainWindow) enqueueDownload(u, dlFormat string) {
+	allowPl := len(mw.PlaylistEntries) > 0
+	var entriesCopy []ytdlp.PlaylistEntry
+	var checksCopy []bool
+	var selectedItemsStr string
+
+	title := mw.PreviewTitle.Text
+	if title == "—" || title == "" {
+		title = u
 	}
-	mw.DlMu.Unlock()
-	mw.setProgressInfo("", "")
-	mw.setDownloadProgress(0)
-
-	if len(mw.PlaylistEntries) > 0 {
-		fyne.Do(func() {
-			for i, status := range mw.PlaylistStatuses {
-				if status == "Waiting..." || status == "Downloading..." {
-					mw.PlaylistStatuses[i] = ""
-				}
-			}
-			if mw.PlaylistList != nil {
-				mw.PlaylistList.Refresh()
-			}
-		})
-	}
-}
-
-func (mw *MainWindow) handleDownloadResult(ctx context.Context, resultPath string, err error) {
-	mw.DlMu.Lock()
-	mw.DlCancel = nil
-	if err == nil && resultPath != "" {
-		mw.LastDownloadedFile = resultPath
-	}
-	mw.DlMu.Unlock()
-	mw.setDownloading(false)
-
-	if err != nil {
-		mw.Logger.Err("Download error: " + err.Error())
-		if ctx.Err() != nil {
-			mw.setStatus("Cancelled")
-		} else {
-			mw.setStatus("Download failed")
-			mw.App.SendNotification(fyne.NewNotification("Download Failed", "An error occurred during download."))
-		}
-		mw.setDownloadProgress(0)
-		return
-	}
-	mw.setDownloadProgress(100)
-	mw.setProgressInfo("", "")
-	mw.setStatus("Done ✅")
-	fyne.Do(func() { mw.BtnOpenFolder.Enable() })
-	playDoneSound()
-
-	var notifTitle, notifBody string
-
-	if len(mw.PlaylistEntries) > 0 {
-		notifTitle = "Playlist Downloaded ✅"
-		notifBody = mw.PlaylistTitle
-		if notifBody == "" {
-			notifBody = "All selected videos have been downloaded."
-		}
-	} else {
-		notifTitle = "Video Downloaded ✅"
-		notifBody = mw.PreviewTitle.Text
-		if notifBody == "—" || notifBody == "" {
-			notifBody = "Your video has finished downloading."
-		}
-	}
-
-	mw.App.SendNotification(fyne.NewNotification(notifTitle, notifBody))
-}
-
-func (mw *MainWindow) startDownloadRoutine(u, dlFormat string) {
-	ctx, cancel := context.WithCancel(context.Background())
-	mw.DlMu.Lock()
-	mw.DlCancel = cancel
-	mw.LastDownloadedFile = ""
-	mw.DlMu.Unlock()
 
 	forceRedownload := mw.CheckRedownload.Checked
 
-	selectedItemsStr := ""
-	if len(mw.PlaylistEntries) > 0 {
+	if allowPl {
+		title = mw.PlaylistTitle
+		if title == "" {
+			title = "Playlist"
+		}
+
+		entriesCopy = make([]ytdlp.PlaylistEntry, len(mw.PlaylistEntries))
+		copy(entriesCopy, mw.PlaylistEntries)
+
+		checksCopy = make([]bool, len(mw.PlaylistChecks))
+		copy(checksCopy, mw.PlaylistChecks)
+
 		var selected []string
 		for i, chk := range mw.PlaylistChecks {
 			if chk {
 				if !forceRedownload && mw.PlaylistStatuses[i] == "Ready ✅" {
+					checksCopy[i] = false
 					continue
 				}
 				selected = append(selected, strconv.Itoa(i+1))
@@ -508,103 +401,223 @@ func (mw *MainWindow) startDownloadRoutine(u, dlFormat string) {
 		selectedItemsStr = strings.Join(selected, ",")
 		if selectedItemsStr == "" {
 			dialog.ShowInformation("Skip", "All selected videos are already downloaded.", mw.Window)
-			mw.setDownloading(false)
-			mw.DlMu.Lock()
-			mw.DlCancel = nil
-			mw.DlMu.Unlock()
 			return
 		}
+		title += fmt.Sprintf(" (%d videos)", len(selected))
+
+		fyne.Do(func() {
+			for i, chk := range checksCopy {
+				if chk {
+					mw.PlaylistStatuses[i] = "Queued..."
+				}
+			}
+			mw.PlaylistList.Refresh()
+		})
 	}
 
-	go func() {
-		allowPl := len(mw.PlaylistEntries) > 0
-		useSb := mw.CheckSponsorBlock.Checked
-		naming := mw.NamingSelect.Selected
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &DownloadJob{
+		Title:            title,
+		URL:              u,
+		DlFormat:         dlFormat,
+		OutputDir:        mw.State.OutputDir,
+		FormatSelect:     mw.FormatSelect.Selected,
+		BrowserSelect:    mw.BrowserSelect.Selected,
+		CookiesFilePath:  mw.CookiesFilePath,
+		AllowPl:          allowPl,
+		UseSb:            mw.CheckSponsorBlock.Checked,
+		Naming:           mw.NamingSelect.Selected,
+		SelectedItemsStr: selectedItemsStr,
+		PlaylistEntries:  entriesCopy,
+		PlaylistChecks:   checksCopy,
+		Status:           "Queued",
+		Thumbnail:        mw.PreviewImg.Resource,
+		Ctx:              ctx,
+		Cancel:           cancel,
+	}
 
-		totalSelected := 0
-		finishedCount := 0
-		currentProcessingIndex := -1
+	mw.JobsMu.Lock()
+	mw.Jobs = append(mw.Jobs, job)
+	mw.JobsMu.Unlock()
 
-		targetDir := mw.State.OutputDir
-		if allowPl {
-			safeName := sanitizeFileName(mw.PlaylistTitle)
-			if safeName == "" {
-				safeName = "Playlist"
-			}
-			targetDir = filepath.Join(mw.State.OutputDir, safeName)
-			os.MkdirAll(targetDir, 0755)
+	job.UI = mw.buildJobUI(job)
+	mw.QueueBox.Add(job.UI.Root)
+	mw.QueueBox.Refresh()
 
-			for i, chk := range mw.PlaylistChecks {
-				if chk {
-					if !forceRedownload && mw.PlaylistStatuses[i] == "Ready ✅" {
-						continue
-					}
-					totalSelected++
-				}
-			}
-			fyne.Do(func() {
-				for i, chk := range mw.PlaylistChecks {
-					if chk {
-						if !forceRedownload && mw.PlaylistStatuses[i] == "Ready ✅" {
-							continue
-						}
-						mw.PlaylistStatuses[i] = "Waiting..."
-					} else if mw.PlaylistStatuses[i] != "Ready ✅" {
-						mw.PlaylistStatuses[i] = ""
-					}
-				}
-				mw.PlaylistList.Refresh()
-			})
+	mw.App.SendNotification(fyne.NewNotification("Added to Queue", title))
+
+	mw.updateDownloadsBadge()
+
+	go mw.processJob(job)
+}
+
+func (mw *MainWindow) processJob(job *DownloadJob) {
+	mw.DlSemaphore <- struct{}{}
+	defer func() { <-mw.DlSemaphore }()
+
+	mw.JobsMu.Lock()
+	if job.Status == "Cancelled" {
+		mw.JobsMu.Unlock()
+		return
+	}
+	job.Status = "Downloading..."
+	mw.JobsMu.Unlock()
+
+	mw.UpdMu.Lock()
+	mw.Downloading = true
+	mw.UpdMu.Unlock()
+
+	mw.updateDownloadsBadge()
+
+	fyne.Do(func() {
+		job.UI.StatusLbl.SetText("Starting...")
+		if mw.UrlEntry.Text == job.URL {
+			mw.Status.SetText("Downloading: " + job.Title)
 		}
+	})
 
-		resultPath, err := mw.Cli.Download(ctx, u, dlFormat, targetDir, mw.FormatSelect.Selected, mw.BrowserSelect.Selected, mw.CookiesFilePath, allowPl, useSb, naming, selectedItemsStr,
-			func(p ytdlp.Progress) {
-				line, pct := mw.progressLine(p)
-				if pct >= 0 {
-					mw.setDownloadProgress(pct)
-					mw.setProgressInfo(p.Spd, p.Eta)
-					if mw.shouldLogProgress(pct) {
-						mw.Logger.Dbg(line)
+	targetDir := job.OutputDir
+	if job.AllowPl {
+		safeName := sanitizeFileName(job.Title)
+		if idx := strings.LastIndex(safeName, " ("); idx != -1 {
+			safeName = safeName[:idx]
+		}
+		if safeName == "" {
+			safeName = "Playlist"
+		}
+		targetDir = filepath.Join(job.OutputDir, safeName)
+		os.MkdirAll(targetDir, 0755)
+	}
+
+	currentProcessingIndex := -1
+	totalSelected := 0
+	for _, chk := range job.PlaylistChecks {
+		if chk {
+			totalSelected++
+		}
+	}
+	finishedCount := 0
+
+	resultPath, err := mw.Cli.Download(job.Ctx, job.URL, job.DlFormat, targetDir, job.FormatSelect, job.BrowserSelect, job.CookiesFilePath, job.AllowPl, job.UseSb, job.Naming, job.SelectedItemsStr,
+		func(p ytdlp.Progress) {
+			pct := parsePercent(p.Pct)
+			job.Progress = pct
+			job.Speed = p.Spd
+			job.ETA = p.Eta
+
+			if mw.shouldLogProgress(pct) {
+				mw.Logger.Dbg(fmt.Sprintf("[download] %s %s eta:%v", p.Pct, p.Spd, p.Eta))
+			}
+
+			fyne.Do(func() {
+				etaSec, _ := strconv.ParseFloat(job.ETA, 64)
+				etaStr := formatDuration(etaSec)
+
+				if job.AllowPl {
+					if currentProcessingIndex != -1 && currentProcessingIndex < len(job.UI.ChildProgs) {
+						if job.UI.ChildProgs[currentProcessingIndex] != nil {
+							job.UI.ChildProgs[currentProcessingIndex].SetValue(pct)
+							job.UI.ChildStats[currentProcessingIndex].SetText(fmt.Sprintf("%s | ETA: %s", emptyToDash(job.Speed), etaStr))
+						}
 					}
+					overallPct := (float64(finishedCount*100) + pct) / float64(totalSelected)
+					job.UI.ProgBar.SetValue(overallPct)
+					job.UI.StatusLbl.SetText(fmt.Sprintf("Downloading: %d / %d videos", finishedCount+1, totalSelected))
+				} else {
+					job.UI.ProgBar.SetValue(pct)
+					job.UI.StatusLbl.SetText(fmt.Sprintf("Speed: %s | ETA: %s", emptyToDash(job.Speed), etaStr))
 				}
-			},
-			func(line string) {
-				mw.Logger.Info(line)
-				if allowPl {
-					for i, entry := range mw.PlaylistEntries {
-						if mw.PlaylistChecks[i] && strings.Contains(line, entry.ID) {
-							if currentProcessingIndex != i {
-								prev := currentProcessingIndex
-								currentProcessingIndex = i
+			})
+		},
+		func(line string) {
+			mw.Logger.Info(line)
+			if job.AllowPl {
+				for i, entry := range job.PlaylistEntries {
+					if job.PlaylistChecks[i] && strings.Contains(line, entry.ID) {
+						if currentProcessingIndex != i {
+							prev := currentProcessingIndex
+							currentProcessingIndex = i
 
-								fyne.Do(func() {
-									if prev != -1 {
-										mw.PlaylistStatuses[prev] = "Ready ✅"
-										finishedCount++
-										mw.PlaylistList.RefreshItem(prev)
+							fyne.Do(func() {
+								if prev != -1 && prev < len(job.UI.ChildProgs) {
+									if job.UI.ChildProgs[prev] != nil {
+										job.UI.ChildProgs[prev].SetValue(100)
+										job.UI.ChildStats[prev].SetText("Ready ✅")
 									}
-									mw.PlaylistStatuses[i] = "Downloading..."
-									mw.PlaylistList.RefreshItem(i)
-									mw.Status.SetText(fmt.Sprintf("Downloading: %d / %d videos", finishedCount+1, totalSelected))
-								})
-							}
-							break
+									finishedCount++
+								}
+								if i < len(job.UI.ChildStats) && job.UI.ChildStats[i] != nil {
+									job.UI.ChildStats[i].SetText("Downloading...")
+								}
+							})
 						}
+						break
 					}
 				}
-			},
-		)
+			}
+		},
+	)
 
-		if err == nil && allowPl && currentProcessingIndex != -1 {
-			lastIdx := currentProcessingIndex
-			fyne.Do(func() {
-				mw.PlaylistStatuses[lastIdx] = "Ready ✅"
-				mw.PlaylistList.RefreshItem(lastIdx)
-			})
+	if err == nil && job.AllowPl && currentProcessingIndex != -1 {
+		fyne.Do(func() {
+			if currentProcessingIndex < len(job.UI.ChildProgs) && job.UI.ChildProgs[currentProcessingIndex] != nil {
+				job.UI.ChildProgs[currentProcessingIndex].SetValue(100)
+				job.UI.ChildStats[currentProcessingIndex].SetText("Ready ✅")
+			}
+			job.UI.ProgBar.SetValue(100)
+		})
+	}
+
+	if err != nil {
+		if job.Ctx.Err() != nil {
+			mw.JobsMu.Lock()
+			job.Status = "Cancelled"
+			mw.JobsMu.Unlock()
+			fyne.Do(func() { job.UI.StatusLbl.SetText("Cancelled") })
+		} else {
+			mw.JobsMu.Lock()
+			job.Status = "Error"
+			mw.JobsMu.Unlock()
+			fyne.Do(func() { job.UI.StatusLbl.SetText("Error") })
+			mw.App.SendNotification(fyne.NewNotification("Download Failed", job.Title))
 		}
+	} else {
+		mw.JobsMu.Lock()
+		job.Status = "Done ✅"
+		mw.JobsMu.Unlock()
+		job.Progress = 100
+		fyne.Do(func() {
+			job.UI.StatusLbl.SetText("Done ✅")
+			job.UI.ProgBar.SetValue(100)
+			job.UI.BtnCancel.Disable()
+		})
+		mw.App.SendNotification(fyne.NewNotification("Download Complete ✅", job.Title))
+		playDoneSound()
 
-		mw.handleDownloadResult(ctx, resultPath, err)
-	}()
+		mw.DlMu.Lock()
+		if resultPath != "" {
+			mw.LastDownloadedFile = resultPath
+		}
+		mw.DlMu.Unlock()
+	}
+
+	mw.updateDownloadsBadge()
+
+	mw.JobsMu.Lock()
+	anyActive := false
+	for _, j := range mw.Jobs {
+		if j.Status == "Downloading..." || j.Status == "Queued" || j.Status == "Starting..." {
+			anyActive = true
+			break
+		}
+	}
+	mw.JobsMu.Unlock()
+
+	if !anyActive {
+		mw.UpdMu.Lock()
+		mw.Downloading = false
+		mw.UpdMu.Unlock()
+	}
 }
 
 func (mw *MainWindow) onDownloadBest() {
@@ -613,17 +626,14 @@ func (mw *MainWindow) onDownloadBest() {
 		return
 	}
 
-	mw.setStatus("Downloading best…")
-	mw.setDownloadProgress(0)
 	mw.resetProgressThrottle()
-	mw.Logger.Dbg("--- DOWNLOAD BEST ---")
-	mw.setDownloading(true)
+	mw.Logger.Dbg("--- ENQUEUE BEST ---")
 
 	dlFormat := "bestvideo+bestaudio/best"
 	if mw.FormatSelect.Selected == "mp3" {
 		dlFormat = "bestaudio/best"
 	}
-	mw.startDownloadRoutine(u, dlFormat)
+	mw.enqueueDownload(u, dlFormat)
 }
 
 func (mw *MainWindow) onDownloadSelected() {
@@ -632,11 +642,8 @@ func (mw *MainWindow) onDownloadSelected() {
 		return
 	}
 
-	mw.setStatus("Downloading…")
-	mw.setDownloadProgress(0)
 	mw.resetProgressThrottle()
-	mw.Logger.Dbg("--- DOWNLOAD ---")
-	mw.setDownloading(true)
+	mw.Logger.Dbg("--- ENQUEUE DOWNLOAD ---")
 
 	dlFormat := mw.State.SelectedFmt
 	if dlFormat == "" {
@@ -654,5 +661,5 @@ func (mw *MainWindow) onDownloadSelected() {
 		}
 	}
 
-	mw.startDownloadRoutine(u, dlFormat)
+	mw.enqueueDownload(u, dlFormat)
 }
