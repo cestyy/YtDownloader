@@ -113,7 +113,6 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 		"--http-chunk-size", "10M",
 		"-f", format,
 		"-P", outDir,
-		"-o", "%(title).200B [%(id)s].%(ext)s",
 		"--progress-template",
 		`download:download:{"p":"%(progress._percent_str)s","eta":"%(progress.eta)s","spd":"%(progress._speed_str)s","dl":"%(progress.downloaded_bytes)s","tot":"%(progress.total_bytes)s"}` + "\n",
 	}
@@ -128,11 +127,11 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 		args = append(args, "--sponsorblock-remove", "sponsor,intro,outro")
 	}
 
-	fileNameTemplate := "%(playlist_title|)s%(playlist_title&/|)s%(title).200B [%(id)s].%(ext)s"
+	fileNameTemplate := "%(title).200B [%(id)s].%(ext)s"
 	if nameTemplate == "Author - Title" {
-		fileNameTemplate = "%(playlist_title|)s%(playlist_title&/|)s%(uploader)s - %(title).200B.%(ext)s"
+		fileNameTemplate = "%(uploader)s - %(title).200B.%(ext)s"
 	} else if nameTemplate == "Title (Year)" {
-		fileNameTemplate = "%(playlist_title|)s%(playlist_title&/|)s%(title).200B (%(upload_date>%Y)s).%(ext)s"
+		fileNameTemplate = "%(title).200B (%(upload_date>%Y)s).%(ext)s"
 	}
 	args = append(args, "-o", fileNameTemplate)
 
@@ -258,7 +257,6 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 
 	if ctx.Err() != nil {
 		for _, f := range touchedFiles {
-			_ = os.Remove(f)
 			_ = os.Remove(f + ".part")
 			_ = os.Remove(f + ".ytdl")
 			_ = os.Remove(f + ".temp")

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,20 +16,24 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+func sanitizeFileName(name string) string {
+	invalid := []string{"<", ">", ":", "\"", "/", "\\", "|", "?", "*"}
+	for _, char := range invalid {
+		name = strings.ReplaceAll(name, char, "_")
+	}
+	return strings.TrimSpace(name)
+}
+
 func (mw *MainWindow) bindEvents() {
 	mw.UrlEntry.OnChanged = mw.onUrlChanged
-
 	mw.ResSelect.OnChanged = mw.onFilterChanged
 	mw.ExtSelect.OnChanged = mw.onFilterChanged
-
 	mw.FormatList.OnSelected = mw.onFormatSelected
-
 	mw.BtnOpenFolder.OnTapped = mw.onOpenFolder
 	mw.BtnChooseDir.OnTapped = mw.onChooseDir
 	mw.BtnCancel.OnTapped = mw.onCancel
 	mw.BtnBest.OnTapped = mw.onDownloadBest
 	mw.BtnDownload.OnTapped = mw.onDownloadSelected
-
 	mw.BtnToolsUpdate.OnTapped = mw.onToolsUpdate
 	mw.BtnToolsCancel.OnTapped = mw.onToolsCancel
 	mw.BtnToolsFolder.OnTapped = mw.onToolsFolder
@@ -107,6 +113,7 @@ func (mw *MainWindow) setDownloading(d bool) {
 			mw.ExtSelect.Disable()
 			mw.NamingSelect.Disable()
 			mw.CheckSponsorBlock.Disable()
+			mw.CheckRedownload.Disable()
 			mw.BtnSelectAll.Disable()
 			mw.BtnUnselectAll.Disable()
 		} else {
@@ -123,6 +130,7 @@ func (mw *MainWindow) setDownloading(d bool) {
 			mw.ExtSelect.Enable()
 			mw.NamingSelect.Enable()
 			mw.CheckSponsorBlock.Enable()
+			mw.CheckRedownload.Enable()
 			mw.BtnSelectAll.Enable()
 			mw.BtnUnselectAll.Enable()
 			mw.UpdMu.Lock()
@@ -172,6 +180,9 @@ func (mw *MainWindow) resetUIForEmpty() {
 
 		mw.PlaylistEntries = nil
 		mw.PlaylistChecks = nil
+		mw.PlaylistStatuses = nil
+		mw.PlaylistTitle = ""
+		mw.updateSelectedCount()
 
 		if mw.RightPanelCards != nil && mw.PreviewContainer != nil {
 			mw.RightPanelCards.Objects = []fyne.CanvasObject{mw.PreviewContainer}
@@ -231,11 +242,15 @@ func (mw *MainWindow) startProcess(url string) {
 		}
 
 		if info.Type == "playlist" && len(info.Entries) > 0 {
+			mw.PlaylistTitle = info.Title
 			mw.PlaylistEntries = info.Entries
 			mw.PlaylistChecks = make([]bool, len(info.Entries))
+			mw.PlaylistStatuses = make([]string, len(info.Entries))
 			for i := range mw.PlaylistChecks {
 				mw.PlaylistChecks[i] = true
 			}
+
+			mw.updateSelectedCount()
 
 			fyne.Do(func() {
 				if strings.TrimSpace(mw.UrlEntry.Text) != myURL {
@@ -384,6 +399,20 @@ func (mw *MainWindow) onCancel() {
 	}
 	mw.DlMu.Unlock()
 	mw.setProgressInfo("", "")
+	mw.setDownloadProgress(0)
+
+	if len(mw.PlaylistEntries) > 0 {
+		fyne.Do(func() {
+			for i, status := range mw.PlaylistStatuses {
+				if status == "Waiting..." || status == "Downloading..." {
+					mw.PlaylistStatuses[i] = ""
+				}
+			}
+			if mw.PlaylistList != nil {
+				mw.PlaylistList.Refresh()
+			}
+		})
+	}
 }
 
 func (mw *MainWindow) handleDownloadResult(ctx context.Context, resultPath string, err error) {
@@ -402,6 +431,7 @@ func (mw *MainWindow) handleDownloadResult(ctx context.Context, resultPath strin
 		} else {
 			mw.setStatus("Download failed")
 		}
+		mw.setDownloadProgress(0)
 		return
 	}
 	mw.setDownloadProgress(100)
@@ -418,19 +448,23 @@ func (mw *MainWindow) startDownloadRoutine(u, dlFormat string) {
 	mw.LastDownloadedFile = ""
 	mw.DlMu.Unlock()
 
+	forceRedownload := mw.CheckRedownload.Checked
+
 	selectedItemsStr := ""
 	if len(mw.PlaylistEntries) > 0 {
 		var selected []string
 		for i, chk := range mw.PlaylistChecks {
 			if chk {
+				if !forceRedownload && mw.PlaylistStatuses[i] == "Ready ✅" {
+					continue
+				}
 				selected = append(selected, strconv.Itoa(i+1))
 			}
 		}
 		selectedItemsStr = strings.Join(selected, ",")
 		if selectedItemsStr == "" {
-			dialog.ShowInformation("No videos selected", "Please select at least one video to download.", mw.Window)
+			dialog.ShowInformation("Skip", "All selected videos are already downloaded.", mw.Window)
 			mw.setDownloading(false)
-
 			mw.DlMu.Lock()
 			mw.DlCancel = nil
 			mw.DlMu.Unlock()
@@ -443,7 +477,43 @@ func (mw *MainWindow) startDownloadRoutine(u, dlFormat string) {
 		useSb := mw.CheckSponsorBlock.Checked
 		naming := mw.NamingSelect.Selected
 
-		resultPath, err := mw.Cli.Download(ctx, u, dlFormat, mw.State.OutputDir, mw.FormatSelect.Selected, mw.BrowserSelect.Selected, allowPl, useSb, naming, selectedItemsStr,
+		totalSelected := 0
+		finishedCount := 0
+		currentProcessingIndex := -1
+
+		targetDir := mw.State.OutputDir
+		if allowPl {
+			safeName := sanitizeFileName(mw.PlaylistTitle)
+			if safeName == "" {
+				safeName = "Playlist"
+			}
+			targetDir = filepath.Join(mw.State.OutputDir, safeName)
+			os.MkdirAll(targetDir, 0755)
+
+			for i, chk := range mw.PlaylistChecks {
+				if chk {
+					if !forceRedownload && mw.PlaylistStatuses[i] == "Ready ✅" {
+						continue
+					}
+					totalSelected++
+				}
+			}
+			fyne.Do(func() {
+				for i, chk := range mw.PlaylistChecks {
+					if chk {
+						if !forceRedownload && mw.PlaylistStatuses[i] == "Ready ✅" {
+							continue
+						}
+						mw.PlaylistStatuses[i] = "Waiting..."
+					} else if mw.PlaylistStatuses[i] != "Ready ✅" {
+						mw.PlaylistStatuses[i] = ""
+					}
+				}
+				mw.PlaylistList.Refresh()
+			})
+		}
+
+		resultPath, err := mw.Cli.Download(ctx, u, dlFormat, targetDir, mw.FormatSelect.Selected, mw.BrowserSelect.Selected, allowPl, useSb, naming, selectedItemsStr,
 			func(p ytdlp.Progress) {
 				line, pct := mw.progressLine(p)
 				if pct >= 0 {
@@ -454,8 +524,41 @@ func (mw *MainWindow) startDownloadRoutine(u, dlFormat string) {
 					}
 				}
 			},
-			func(line string) { mw.Logger.Info(line) },
+			func(line string) {
+				mw.Logger.Info(line)
+				if allowPl {
+					for i, entry := range mw.PlaylistEntries {
+						if mw.PlaylistChecks[i] && strings.Contains(line, entry.ID) {
+							if currentProcessingIndex != i {
+								prev := currentProcessingIndex
+								currentProcessingIndex = i
+
+								fyne.Do(func() {
+									if prev != -1 {
+										mw.PlaylistStatuses[prev] = "Ready ✅"
+										finishedCount++
+										mw.PlaylistList.RefreshItem(prev)
+									}
+									mw.PlaylistStatuses[i] = "Downloading..."
+									mw.PlaylistList.RefreshItem(i)
+									mw.Status.SetText(fmt.Sprintf("Downloading: %d / %d videos", finishedCount+1, totalSelected))
+								})
+							}
+							break
+						}
+					}
+				}
+			},
 		)
+
+		if err == nil && allowPl && currentProcessingIndex != -1 {
+			lastIdx := currentProcessingIndex
+			fyne.Do(func() {
+				mw.PlaylistStatuses[lastIdx] = "Ready ✅"
+				mw.PlaylistList.RefreshItem(lastIdx)
+			})
+		}
+
 		mw.handleDownloadResult(ctx, resultPath, err)
 	}()
 }

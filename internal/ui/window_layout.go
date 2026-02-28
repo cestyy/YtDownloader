@@ -33,7 +33,7 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	mw.PreviewContainer = container.NewVBox(
 		widget.NewLabel("Preview:"), mw.PreviewTitle, mw.PreviewImg,
 	)
-	playlistTopBtn := container.NewHBox(mw.BtnSelectAll, mw.BtnUnselectAll)
+	playlistTopBtn := container.NewHBox(mw.BtnSelectAll, mw.BtnUnselectAll, layout.NewSpacer(), mw.SelectedCount)
 	mw.PlaylistPanel = container.NewBorder(playlistTopBtn, nil, nil, nil, mw.PlaylistList)
 
 	mw.RightPanelCards = container.NewMax(mw.PreviewContainer)
@@ -54,6 +54,7 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 		widget.NewSeparator(),
 		widget.NewLabel("Downloads"),
 		mw.CheckSponsorBlock,
+		mw.CheckRedownload,
 		widget.NewLabel("File Naming Template"),
 		mw.NamingSelect,
 		widget.NewSeparator(),

@@ -11,6 +11,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -39,14 +40,18 @@ type MainWindow struct {
 	ExtSelect     *widget.Select
 
 	CheckSponsorBlock *widget.Check
+	CheckRedownload   *widget.Check
 	NamingSelect      *widget.Select
 
-	PlaylistEntries []ytdlp.PlaylistEntry
-	PlaylistChecks  []bool
-	PlaylistList    *widget.List
-	BtnSelectAll    *widget.Button
-	BtnUnselectAll  *widget.Button
-	PlaylistPanel   *fyne.Container
+	PlaylistTitle    string
+	PlaylistEntries  []ytdlp.PlaylistEntry
+	PlaylistChecks   []bool
+	PlaylistStatuses []string
+	PlaylistList     *widget.List
+	BtnSelectAll     *widget.Button
+	BtnUnselectAll   *widget.Button
+	SelectedCount    *widget.Label
+	PlaylistPanel    *fyne.Container
 
 	PreviewContainer *fyne.Container
 	RightPanelCards  *fyne.Container
@@ -182,6 +187,14 @@ func (mw *MainWindow) setupWidgets() {
 	})
 	mw.CheckSponsorBlock.SetChecked(mw.App.Preferences().BoolWithFallback("SponsorBlock", false))
 
+	mw.CheckRedownload = widget.NewCheck("Force redownload (if already Ready)", func(b bool) {
+		mw.App.Preferences().SetBool("Redownload", b)
+	})
+	mw.CheckRedownload.SetChecked(mw.App.Preferences().BoolWithFallback("Redownload", false))
+
+	mw.SelectedCount = widget.NewLabel("")
+	mw.SelectedCount.TextStyle = fyne.TextStyle{Bold: true}
+
 	mw.BtnSelectAll = widget.NewButton("Select All", func() {
 		if len(mw.PlaylistChecks) == 0 {
 			return
@@ -190,6 +203,7 @@ func (mw *MainWindow) setupWidgets() {
 			mw.PlaylistChecks[i] = true
 		}
 		mw.PlaylistList.Refresh()
+		mw.updateSelectedCount()
 	})
 
 	mw.BtnUnselectAll = widget.NewButton("Unselect all", func() {
@@ -200,6 +214,7 @@ func (mw *MainWindow) setupWidgets() {
 			mw.PlaylistChecks[i] = false
 		}
 		mw.PlaylistList.Refresh()
+		mw.updateSelectedCount()
 	})
 
 	namingOption := []string{"Default (Title [ID])", "Author - Title", "Title (Year)"}
@@ -210,6 +225,21 @@ func (mw *MainWindow) setupWidgets() {
 
 	mw.setupFormatList()
 	mw.setupPlaylistList()
+}
+
+func (mw *MainWindow) updateSelectedCount() {
+	if mw.SelectedCount == nil {
+		return
+	}
+	count := 0
+	for _, c := range mw.PlaylistChecks {
+		if c {
+			count++
+		}
+	}
+	fyne.Do(func() {
+		mw.SelectedCount.SetText(fmt.Sprintf("Selected: %d / %d", count, len(mw.PlaylistEntries)))
+	})
 }
 
 func (mw *MainWindow) setupFormatList() {
@@ -269,7 +299,12 @@ func (mw *MainWindow) setupPlaylistList() {
 			author := widget.NewLabel("Author")
 			author.TextStyle = fyne.TextStyle{Italic: true}
 
-			vbox := container.NewVBox(title, author)
+			statusLbl := widget.NewLabel("")
+			statusLbl.TextStyle = fyne.TextStyle{Bold: true}
+
+			bottomRow := container.NewHBox(author, layout.NewSpacer(), statusLbl)
+			vbox := container.NewVBox(title, bottomRow)
+
 			return container.NewBorder(nil, nil, container.NewHBox(chk, img), nil, vbox)
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
@@ -282,27 +317,33 @@ func (mw *MainWindow) setupPlaylistList() {
 
 			vbox := c.Objects[0].(*fyne.Container)
 			title := vbox.Objects[0].(*widget.Label)
-			author := vbox.Objects[1].(*widget.Label)
+
+			bottomRow := vbox.Objects[1].(*fyne.Container)
+			author := bottomRow.Objects[0].(*widget.Label)
+			statusLbl := bottomRow.Objects[2].(*widget.Label)
 
 			title.SetText(fmt.Sprintf("%d. %s", i+1, entry.Title))
 			author.SetText(entry.Uploader)
 
+			statusLbl.SetText(mw.PlaylistStatuses[i])
+
 			chk.Checked = mw.PlaylistChecks[i]
 			chk.OnChanged = func(b bool) {
 				mw.PlaylistChecks[i] = b
+				mw.updateSelectedCount()
 			}
 			chk.Refresh()
 
 			img.Resource = theme.FileImageIcon()
 
-			if cached, ok := thumbCache.Load(entry.ID); ok {
+			cached, ok := thumbCache.Load(entry.ID)
+			if ok && cached != "loading" {
 				if res, isRes := cached.(fyne.Resource); isRes {
 					img.Resource = res
 				}
-			} else {
+			} else if !ok {
 				thumbCache.Store(entry.ID, "loading")
-
-				thumbURL := fmt.Sprintf("https://img.youtube.com/vi/%s/default.jpg", entry.ID)
+				thumbURL := fmt.Sprintf("https://img.youtube.com/vi/%s/mqdefault.jpg", entry.ID)
 
 				go func(id, url string, index widget.ListItemID) {
 					res := loadRemoteImageResource(url)
@@ -318,6 +359,8 @@ func (mw *MainWindow) setupPlaylistList() {
 					}
 				}(entry.ID, thumbURL, i)
 			}
+
+			img.Refresh()
 		},
 	)
 }
