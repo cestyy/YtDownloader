@@ -277,7 +277,7 @@ func (mw *MainWindow) startProcess(url string) {
 					mw.PlaylistList.Refresh()
 				}
 
-				mw.setStatus(fmt.Sprintf("Playlist: %d videos", len(info.Entries)))
+				mw.setStatus(fmt.Sprintf(T("playlist_videos"), len(info.Entries)))
 				mw.Busy.Hide()
 				mw.BtnDownload.Enable()
 				mw.BtnBest.Enable()
@@ -299,7 +299,7 @@ func (mw *MainWindow) startProcess(url string) {
 				mw.applyFilter()
 				mw.FormatList.UnselectAll()
 				mw.FormatList.Refresh()
-				mw.setStatus(fmt.Sprintf("Found formats: %d", len(mw.FormatsView)))
+				mw.setStatus(fmt.Sprintf(T("found_formats"), len(mw.FormatsView)))
 				mw.Busy.Hide()
 				if info.Title != "" {
 					mw.PreviewTitle.SetText(info.Title)
@@ -438,7 +438,7 @@ func (mw *MainWindow) enqueueDownload(u, dlFormat string) {
 		}
 		selectedItemsStr = strings.Join(selected, ",")
 		if selectedItemsStr == "" {
-			dialog.ShowInformation("Skip", "All selected videos are already downloaded.", mw.Window)
+			dialog.ShowInformation(T("skip_title"), T("skip_msg"), mw.Window)
 			return
 		}
 		title += fmt.Sprintf(" (%d videos)", len(selected))
@@ -484,7 +484,7 @@ func (mw *MainWindow) enqueueDownload(u, dlFormat string) {
 	mw.QueueBox.Add(job.UI.Root)
 	mw.QueueBox.Refresh()
 
-	mw.App.SendNotification(fyne.NewNotification("Added to Queue", title))
+	mw.App.SendNotification(fyne.NewNotification(T("added_queue"), title))
 
 	mw.updateDownloadsBadge()
 
@@ -564,7 +564,7 @@ func (mw *MainWindow) processJob(job *DownloadJob) {
 			fyne.Do(func() {
 				etaSec, _ := strconv.ParseFloat(job.ETA, 64)
 				job.UI.ProgBar.SetValue(pct)
-				job.UI.StatusLbl.SetText(fmt.Sprintf("%s / %s   |   Speed: %s   |   ETA: %s", emptyToDash(p.Dl), emptyToDash(p.Tot), emptyToDash(job.Speed), formatDuration(etaSec)))
+				job.UI.StatusLbl.SetText(fmt.Sprintf(T("speed_label"), emptyToDash(p.Dl), emptyToDash(p.Tot), emptyToDash(job.Speed), formatDuration(etaSec)))
 			})
 		},
 		OnLine: func(line string) { mw.Logger.Info(line) },
@@ -609,7 +609,7 @@ func (mw *MainWindow) processPlaylistJob(job *DownloadJob) {
 	}
 
 	fyne.Do(func() {
-		job.UI.StatusLbl.SetText(fmt.Sprintf("Queued: 0 / %d videos", totalSelected))
+		job.UI.StatusLbl.SetText(fmt.Sprintf(T("queued_videos"), totalSelected))
 		job.UI.BtnPauseResume.Show()
 	})
 
@@ -696,7 +696,7 @@ func (mw *MainWindow) processPlaylistJob(job *DownloadJob) {
 					fyne.Do(func() {
 						etaSec, _ := strconv.ParseFloat(p.Eta, 64)
 						job.UI.ChildProgs[realIdx] = pct
-						job.UI.ChildStats[realIdx] = fmt.Sprintf("%s / %s | %s | ETA: %s", emptyToDash(p.Dl), emptyToDash(p.Tot), emptyToDash(p.Spd), formatDuration(etaSec))
+						job.UI.ChildStats[realIdx] = fmt.Sprintf(T("speed_label"), emptyToDash(p.Dl), emptyToDash(p.Tot), emptyToDash(p.Spd), formatDuration(etaSec))
 						job.UI.ChildList.RefreshItem(widget.ListItemID(listIdx))
 
 						finishedMu.Lock()
@@ -737,7 +737,7 @@ func (mw *MainWindow) processPlaylistJob(job *DownloadJob) {
 
 					overall := float64(fc) * 100 / float64(totalSelected)
 					job.UI.ProgBar.SetValue(overall)
-					job.UI.StatusLbl.SetText(fmt.Sprintf("Downloading: %d / %d videos", fc, totalSelected))
+					job.UI.StatusLbl.SetText(fmt.Sprintf(T("downloading_videos"), fc, totalSelected))
 				})
 			}
 		}()
@@ -784,10 +784,10 @@ func (mw *MainWindow) processPlaylistJob(job *DownloadJob) {
 
 	switch finalStatus {
 	case StatusDone:
-		mw.App.SendNotification(fyne.NewNotification("Playlist Complete ✅", job.Title))
+		mw.App.SendNotification(fyne.NewNotification(T("playlist_complete"), job.Title))
 		playDoneSound()
 	case StatusError:
-		mw.App.SendNotification(fyne.NewNotification("Playlist had errors", job.Title))
+		mw.App.SendNotification(fyne.NewNotification(T("playlist_errors"), job.Title))
 	}
 
 	mw.updateDownloadsBadge()

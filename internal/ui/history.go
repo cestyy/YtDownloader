@@ -131,9 +131,9 @@ func (mw *MainWindow) buildHistoryTab() *fyne.Container {
 
 			dateLbl := widget.NewLabel("Date")
 
-			btnOpen := widget.NewButton("Folder", nil)
-			btnPlay := widget.NewButton("Play", nil)
-			btnRemove := widget.NewButton("Remove", nil)
+			btnOpen := widget.NewButton(T("history_folder"), nil)
+			btnPlay := widget.NewButton(T("history_play"), nil)
+			btnRemove := widget.NewButton(T("history_remove"), nil)
 
 			buttons := container.NewHBox(btnOpen, btnPlay, btnRemove)
 			right := container.NewVBox(dateLbl, buttons)
@@ -262,13 +262,13 @@ func (mw *MainWindow) buildHistoryTab() *fyne.Container {
 		}
 	}
 
-	btnClear := widget.NewButton("Clear History", func() {
+	btnClear := widget.NewButton(T("history_clear"), func() {
 		mw.History.Clear()
 		list.Refresh()
 	})
 
 	top := container.NewHBox(
-		widget.NewLabelWithStyle("Download History", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle(T("history_title"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		layout.NewSpacer(),
 		btnClear,
 	)

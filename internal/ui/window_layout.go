@@ -10,17 +10,17 @@ import (
 
 func (mw *MainWindow) buildLayout() *fyne.Container {
 	filterUI := container.NewVBox(
-		widget.NewLabelWithStyle("Filters:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle(T("filters"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		container.NewGridWithColumns(2,
-			container.NewVBox(widget.NewLabel("Resolution (Quality):"), mw.ResSelect),
-			container.NewVBox(widget.NewLabel("Format (Extension):"), mw.ExtSelect),
+			container.NewVBox(widget.NewLabel(T("resolution")), mw.ResSelect),
+			container.NewVBox(widget.NewLabel(T("format")), mw.ExtSelect),
 		),
 	)
 
-	topRow := container.NewBorder(nil, nil, widget.NewLabel("URL:"), nil, mw.UrlEntry)
+	topRow := container.NewBorder(nil, nil, widget.NewLabel(T("url")), nil, mw.UrlEntry)
 	dirRow := container.NewBorder(
 		nil, nil,
-		widget.NewLabel("Save to:"),
+		widget.NewLabel(T("save_to")),
 		container.NewHBox(mw.BtnChooseDir, mw.BtnOpenFolder),
 		mw.OutDirLabel,
 	)
@@ -36,7 +36,7 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 
 	previewCenter := container.NewBorder(mw.PreviewTitle, nil, nil, nil, mw.PreviewImg)
 	mw.PreviewContainer = container.NewBorder(
-		widget.NewLabel("Preview:"), nil, nil, nil, previewCenter,
+		widget.NewLabel(T("preview")), nil, nil, nil, previewCenter,
 	)
 	playlistTopBtn := container.NewHBox(mw.BtnSelectAll, mw.BtnUnselectAll, layout.NewSpacer(), mw.SelectedCount)
 	mw.PlaylistPanel = container.NewBorder(playlistTopBtn, nil, nil, nil, mw.PlaylistList)
@@ -44,7 +44,7 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	mw.RightPanelCards = container.NewMax(mw.PreviewContainer)
 
 	rightTop := container.NewVBox(
-		widget.NewLabel("Status:"), mw.Status,
+		widget.NewLabel(T("status")), mw.Status,
 		widget.NewSeparator(),
 	)
 	right := container.NewBorder(rightTop, nil, nil, nil, mw.RightPanelCards)
@@ -54,7 +54,7 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 
 	queueScroll := container.NewVScroll(mw.QueueBox)
 	queueTop := container.NewHBox(
-		widget.NewLabelWithStyle("Active & Queued Downloads", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle(T("active_queued"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		layout.NewSpacer(),
 		mw.BtnClearQueue,
 	)
@@ -65,21 +65,21 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	)
 
 	logsTop := container.NewVBox(
-		widget.NewLabelWithStyle("System Logs & Output", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle(T("sys_logs"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		mw.Logger.Controls(mw.Window),
 		widget.NewSeparator(),
 	)
 	logsLayout := container.NewBorder(logsTop, nil, nil, nil, container.NewMax(mw.Logger.Widget()))
 
-	mw.DownloadsTab = container.NewTabItemWithIcon("Downloads", theme.DownloadIcon(), queueLayout)
-	mw.HistoryTab = container.NewTabItemWithIcon("History", theme.HistoryIcon(), mw.buildHistoryTab())
+	mw.DownloadsTab = container.NewTabItemWithIcon(T("downloads_tab"), theme.DownloadIcon(), queueLayout)
+	mw.HistoryTab = container.NewTabItemWithIcon(T("history_tab"), theme.HistoryIcon(), mw.buildHistoryTab())
 
 	mw.Tabs = container.NewAppTabs(
 		container.NewTabItemWithIcon("Main", theme.HomeIcon(), mainSplit),
 		mw.DownloadsTab,
 		mw.HistoryTab,
-		container.NewTabItemWithIcon("Settings", theme.SettingsIcon(), settingsLayout),
-		container.NewTabItemWithIcon("Logs", theme.DocumentIcon(), logsLayout),
+		container.NewTabItemWithIcon(T("settings_tab"), theme.SettingsIcon(), settingsLayout),
+		container.NewTabItemWithIcon(T("logs_tab"), theme.DocumentIcon(), logsLayout),
 	)
 	mw.Tabs.SetTabLocation(container.TabLocationLeading)
 
@@ -87,36 +87,45 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 }
 
 func (mw *MainWindow) buildSettingsTab() *fyne.Container {
-	return container.NewVBox(
+	langSelect := widget.NewSelect([]string{LangEn, LangRu}, func(s string) {
+		if CurrentLang != s {
+			mw.App.Preferences().SetString("Language", s)
+			CurrentLang = s
+			mw.UpdateLanguage()
+		}
+	})
+	langSelect.SetSelected(CurrentLang)
 
-		settingsSectionHeader("🎨  Appearance"),
-		settingsRow("Theme", mw.ThemeSelect),
+	return container.NewVBox(
+		settingsSectionHeader(T("appearance")),
+		settingsRow(T("lang"), langSelect),
+		settingsRow(T("theme"), mw.ThemeSelect),
 
 		widget.NewSeparator(),
 
-		settingsSectionHeader("⬇️  Download"),
+		settingsSectionHeader(T("download_sec")),
 		mw.CheckSponsorBlock,
 		mw.CheckRedownload,
 		mw.CheckEmbedMeta,
-		settingsRow("Output format (video/audio)", mw.FormatSelect),
-		settingsRow("File naming template", mw.NamingSelect),
-		settingsRow("Parallel downloads", mw.ConcurrentSelect),
-		settingsLabel("Custom yt-dlp arguments"),
+		settingsRow(T("output_format"), mw.FormatSelect),
+		settingsRow(T("naming_template"), mw.NamingSelect),
+		settingsRow(T("parallel_dl"), mw.ConcurrentSelect),
+		settingsLabel(T("custom_args")),
 		mw.CustomArgsEntry,
 
 		widget.NewSeparator(),
 
-		settingsSectionHeader("🔑  Authentication"),
-		settingsLabel("Browser (for cookie bypass):"),
+		settingsSectionHeader(T("auth_sec")),
+		settingsLabel(T("browser_cookie")),
 		mw.BrowserSelect,
-		settingsLabel("Or use a cookies.txt file:"),
+		settingsLabel(T("file_cookie")),
 		container.NewHBox(mw.BtnCookiesSelect, mw.BtnCookiesClear),
 		mw.CookiesFileLabel,
 
 		widget.NewSeparator(),
 
-		settingsSectionHeader("🔧  Tools (yt-dlp & ffmpeg)"),
-		settingsRow("Status", mw.ToolsStatus),
+		settingsSectionHeader(T("tools_sec")),
+		settingsRow(T("status"), mw.ToolsStatus),
 		mw.ToolsBusy,
 		container.NewHBox(mw.BtnToolsUpdate, mw.BtnToolsCancel, mw.BtnToolsFolder),
 	)
