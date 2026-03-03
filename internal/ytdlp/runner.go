@@ -69,7 +69,6 @@ func (r *Runner) FetchInfo(ctx context.Context, url, browser, cookiesFile string
 		args = append(args, "--no-playlist")
 	}
 
-	// Умный выбор куки: файл в приоритете
 	if cookiesFile != "" {
 		args = append(args, "--cookies", cookiesFile)
 	} else if browser != "" && browser != "none" {
@@ -98,8 +97,26 @@ func (r *Runner) FetchInfo(ctx context.Context, url, browser, cookiesFile string
 type ProgressHandler func(p Progress)
 type LineHandler func(line string)
 
-func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat, browser, cookiesFile string, allowPlaylist, useSponsorBlock bool, nameTemplate string, selectedItems string, onProgress ProgressHandler, onLine LineHandler) (string, error) {
-	if format == "" {
+type DownloadOptions struct {
+	URL             string
+	Format          string
+	OutDir          string
+	MergeFormat     string
+	Browser         string
+	CookiesFile     string
+	AllowPlaylist   bool
+	UseSponsorBlock bool
+	NameTemplate    string
+	SelectedItems   string
+	CustomArgs      string
+	EmbedMeta       bool
+	OnStart         func(touchedFiles []string)
+	OnProgress      ProgressHandler
+	OnLine          LineHandler
+}
+
+func (r *Runner) Download(ctx context.Context, opts DownloadOptions) (string, error) {
+	if opts.Format == "" {
 		return "", errors.New("format is empty")
 	}
 
@@ -114,51 +131,58 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 		"--fragment-retries", "10",
 		"--file-access-retries", "5",
 		"--http-chunk-size", "10M",
-		"-f", format,
-		"-P", outDir,
+		"-f", opts.Format,
+		"-P", opts.OutDir,
 		"--progress-template",
 		`download:download:{"p":"%(progress._percent_str)s","eta":"%(progress.eta)s","spd":"%(progress._speed_str)s","dl":"%(progress.downloaded_bytes)s","tot":"%(progress.total_bytes)s"}` + "\n",
 	}
 
-	if !allowPlaylist {
+	if !opts.AllowPlaylist {
 		args = append(args, "--no-playlist")
 	} else {
 		args = append(args, "--yes-playlist")
 	}
 
-	if useSponsorBlock {
+	if opts.UseSponsorBlock {
 		args = append(args, "--sponsorblock-remove", "sponsor,intro,outro")
 	}
 
+	if opts.EmbedMeta {
+		args = append(args, "--embed-metadata", "--embed-thumbnail")
+	}
+
 	fileNameTemplate := "%(title).200B [%(id)s].%(ext)s"
-	if nameTemplate == "Author - Title" {
+	if opts.NameTemplate == "Author - Title" {
 		fileNameTemplate = "%(uploader)s - %(title).200B.%(ext)s"
-	} else if nameTemplate == "Title (Year)" {
+	} else if opts.NameTemplate == "Title (Year)" {
 		fileNameTemplate = "%(title).200B (%(upload_date>%Y)s).%(ext)s"
 	}
 	args = append(args, "-o", fileNameTemplate)
 
-	if selectedItems != "" {
-		args = append(args, "--playlist-items", selectedItems)
+	if opts.SelectedItems != "" {
+		args = append(args, "--playlist-items", opts.SelectedItems)
 	}
 
-	// Умный выбор куки: файл в приоритете
-	if cookiesFile != "" {
-		args = append(args, "--cookies", cookiesFile)
-	} else if browser != "" && browser != "none" {
-		args = append(args, "--cookies-from-browser", browser)
+	if opts.CookiesFile != "" {
+		args = append(args, "--cookies", opts.CookiesFile)
+	} else if opts.Browser != "" && opts.Browser != "none" {
+		args = append(args, "--cookies-from-browser", opts.Browser)
 	}
 
 	if r.FFmpegDir != "" {
 		args = append(args, "--ffmpeg-location", r.FFmpegDir)
-		if mergeFormat == "mp3" {
+		if opts.MergeFormat == "mp3" {
 			args = append(args, "--extract-audio", "--audio-format", "mp3")
 		} else {
-			args = append(args, "--merge-output-format", mergeFormat, "--remux-video", mergeFormat)
+			args = append(args, "--merge-output-format", opts.MergeFormat, "--remux-video", opts.MergeFormat)
 		}
 	}
 
-	args = append(args, url)
+	if opts.CustomArgs != "" {
+		args = append(args, strings.Fields(opts.CustomArgs)...)
+	}
+
+	args = append(args, opts.URL)
 	cmd := r.baseCmd(ctx, args...)
 
 	stdout, err := cmd.StdoutPipe()
@@ -191,15 +215,24 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 			dest := strings.TrimPrefix(line, "[download] Destination: ")
 			finalFilePath = dest
 			touchedFiles = append(touchedFiles, dest)
+			if opts.OnStart != nil {
+				opts.OnStart(touchedFiles)
+			}
 		} else if strings.HasPrefix(line, "[Merger] Merging formats into ") {
 			dest := strings.TrimPrefix(line, "[Merger] Merging formats into ")
 			dest = strings.Trim(dest, `"`)
 			finalFilePath = dest
 			touchedFiles = append(touchedFiles, dest)
+			if opts.OnStart != nil {
+				opts.OnStart(touchedFiles)
+			}
 		} else if strings.HasPrefix(line, "[ExtractAudio] Destination: ") {
 			dest := strings.TrimPrefix(line, "[ExtractAudio] Destination: ")
 			finalFilePath = dest
 			touchedFiles = append(touchedFiles, dest)
+			if opts.OnStart != nil {
+				opts.OnStart(touchedFiles)
+			}
 		} else if strings.Contains(line, "has already been downloaded") && strings.HasPrefix(line, "[download] ") {
 			parts := strings.Split(line, " has already been downloaded")
 			if len(parts) > 0 {
@@ -214,22 +247,22 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 				raw = strings.TrimPrefix(raw, "download:")
 			}
 			var p Progress
-			if json.Unmarshal([]byte(raw), &p) == nil && onProgress != nil {
-				onProgress(p)
+			if json.Unmarshal([]byte(raw), &p) == nil && opts.OnProgress != nil {
+				opts.OnProgress(p)
 				return
 			}
 		}
 
 		if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
 			var p Progress
-			if json.Unmarshal([]byte(line), &p) == nil && onProgress != nil && strings.TrimSpace(p.Pct) != "" {
-				onProgress(p)
+			if json.Unmarshal([]byte(line), &p) == nil && opts.OnProgress != nil && strings.TrimSpace(p.Pct) != "" {
+				opts.OnProgress(p)
 				return
 			}
 		}
 
-		if onLine != nil {
-			onLine(line)
+		if opts.OnLine != nil {
+			opts.OnLine(line)
 		}
 	}
 
@@ -262,11 +295,6 @@ func (r *Runner) Download(ctx context.Context, url, format, outDir, mergeFormat,
 	err = cmd.Wait()
 
 	if ctx.Err() != nil {
-		for _, f := range touchedFiles {
-			_ = os.Remove(f + ".part")
-			_ = os.Remove(f + ".ytdl")
-			_ = os.Remove(f + ".temp")
-		}
 		return "", fmt.Errorf("download cancelled by user")
 	}
 

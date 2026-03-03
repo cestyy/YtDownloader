@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"YtDownloader/internal/ytdlp"
@@ -16,12 +17,19 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-func sanitizeFileName(name string) string {
-	invalid := []string{"<", ">", ":", "\"", "/", "\\", "|", "?", "*"}
-	for _, char := range invalid {
-		name = strings.ReplaceAll(name, char, "_")
+func (mw *MainWindow) isDownloading() bool {
+	mw.UpdMu.Lock()
+	defer mw.UpdMu.Unlock()
+	return mw.Downloading
+}
+
+func (mw *MainWindow) safeStopDebounce() {
+	mw.ProcessMu.Lock()
+	if mw.Debounce != nil {
+		mw.Debounce.Stop()
+		mw.Debounce = nil
 	}
-	return strings.TrimSpace(name)
+	mw.ProcessMu.Unlock()
 }
 
 func (mw *MainWindow) bindEvents() {
@@ -46,7 +54,7 @@ func (mw *MainWindow) updateDownloadsBadge() {
 	mw.JobsMu.Lock()
 	count := 0
 	for _, j := range mw.Jobs {
-		if j.Status == "Queued" || j.Status == "Downloading..." || j.Status == "Starting..." {
+		if j.Status == StatusQueued || j.Status == StatusDownloading || j.Status == StatusStarting {
 			count++
 		}
 	}
@@ -196,6 +204,21 @@ func (mw *MainWindow) startProcess(url string) {
 		mw.PreviewImg.Resource = nil
 		mw.PreviewImg.Hide()
 		mw.PreviewImg.Refresh()
+
+		mw.PlaylistEntries = nil
+		mw.PlaylistChecks = nil
+		mw.PlaylistStatuses = nil
+		mw.PlaylistTitle = ""
+		mw.FormatsAll = nil
+		mw.FormatsView = nil
+		mw.CurrentVideoDuration = 0
+		mw.updateSelectedCount()
+
+		if mw.RightPanelCards != nil && mw.PreviewContainer != nil {
+			mw.RightPanelCards.Objects = []fyne.CanvasObject{mw.PreviewContainer}
+			mw.RightPanelCards.Refresh()
+		}
+		mw.PreviewTitle.SetText("—")
 	})
 
 	mw.Logger.Dbg("--- PROCESS URL --- " + url)
@@ -391,7 +414,7 @@ func (mw *MainWindow) enqueueDownload(u, dlFormat string) {
 		var selected []string
 		for i, chk := range mw.PlaylistChecks {
 			if chk {
-				if !forceRedownload && mw.PlaylistStatuses[i] == "Ready ✅" {
+				if !forceRedownload && mw.PlaylistStatuses[i] == StatusReady {
 					checksCopy[i] = false
 					continue
 				}
@@ -408,7 +431,7 @@ func (mw *MainWindow) enqueueDownload(u, dlFormat string) {
 		fyne.Do(func() {
 			for i, chk := range checksCopy {
 				if chk {
-					mw.PlaylistStatuses[i] = "Queued..."
+					mw.PlaylistStatuses[i] = StatusQueuedDots
 				}
 			}
 			mw.PlaylistList.Refresh()
@@ -430,10 +453,12 @@ func (mw *MainWindow) enqueueDownload(u, dlFormat string) {
 		SelectedItemsStr: selectedItemsStr,
 		PlaylistEntries:  entriesCopy,
 		PlaylistChecks:   checksCopy,
-		Status:           "Queued",
+		Status:           StatusQueued,
 		Thumbnail:        mw.PreviewImg.Resource,
 		Ctx:              ctx,
 		Cancel:           cancel,
+		CustomArgs:       mw.CustomArgsEntry.Text,
+		EmbedMeta:        mw.CheckEmbedMeta != nil && mw.CheckEmbedMeta.Checked,
 	}
 
 	mw.JobsMu.Lock()
@@ -452,15 +477,24 @@ func (mw *MainWindow) enqueueDownload(u, dlFormat string) {
 }
 
 func (mw *MainWindow) processJob(job *DownloadJob) {
-	mw.DlSemaphore <- struct{}{}
+	if job.AllowPl {
+		mw.processPlaylistJob(job)
+		return
+	}
+
+	select {
+	case <-job.Ctx.Done():
+		return
+	case mw.DlSemaphore <- struct{}{}:
+	}
 	defer func() { <-mw.DlSemaphore }()
 
 	mw.JobsMu.Lock()
-	if job.Status == "Cancelled" {
+	if job.Status == StatusCancelled {
 		mw.JobsMu.Unlock()
 		return
 	}
-	job.Status = "Downloading..."
+	job.Status = StatusDownloading
 	mw.JobsMu.Unlock()
 
 	mw.UpdMu.Lock()
@@ -470,126 +504,344 @@ func (mw *MainWindow) processJob(job *DownloadJob) {
 	mw.updateDownloadsBadge()
 
 	fyne.Do(func() {
-		job.UI.StatusLbl.SetText("Starting...")
+		job.UI.StatusLbl.SetText(StatusStarting)
+		job.UI.BtnPauseResume.Show()
 		if mw.UrlEntry.Text == job.URL {
 			mw.Status.SetText("Downloading: " + job.Title)
 		}
 	})
 
-	targetDir := job.OutputDir
-	if job.AllowPl {
-		safeName := sanitizeFileName(job.Title)
-		if idx := strings.LastIndex(safeName, " ("); idx != -1 {
-			safeName = safeName[:idx]
-		}
-		if safeName == "" {
-			safeName = "Playlist"
-		}
-		targetDir = filepath.Join(job.OutputDir, safeName)
-		os.MkdirAll(targetDir, 0755)
+	opts := ytdlp.DownloadOptions{
+		URL:             job.URL,
+		Format:          job.DlFormat,
+		OutDir:          job.OutputDir,
+		MergeFormat:     job.FormatSelect,
+		Browser:         job.BrowserSelect,
+		CookiesFile:     job.CookiesFilePath,
+		AllowPlaylist:   false,
+		UseSponsorBlock: job.UseSb,
+		NameTemplate:    job.Naming,
+		CustomArgs:      job.CustomArgs,
+		EmbedMeta:       job.EmbedMeta,
+		OnStart: func(files []string) {
+			job.TouchedMu.Lock()
+			for _, f := range files {
+				found := false
+				for _, e := range job.TouchedFiles {
+					if e == f {
+						found = true
+						break
+					}
+				}
+				if !found {
+					job.TouchedFiles = append(job.TouchedFiles, f)
+				}
+			}
+			job.TouchedMu.Unlock()
+		},
+		OnProgress: func(p ytdlp.Progress) {
+			pct := parsePercent(p.Pct)
+			job.Speed = p.Spd
+			job.ETA = p.Eta
+			if mw.shouldLogProgress(pct) {
+				mw.Logger.Dbg(fmt.Sprintf("[download] %s %s eta:%v", p.Pct, p.Spd, p.Eta))
+			}
+			fyne.Do(func() {
+				etaSec, _ := strconv.ParseFloat(job.ETA, 64)
+				job.UI.ProgBar.SetValue(pct)
+				job.UI.StatusLbl.SetText(fmt.Sprintf("Speed: %s | ETA: %s", emptyToDash(job.Speed), formatDuration(etaSec)))
+			})
+		},
+		OnLine: func(line string) { mw.Logger.Info(line) },
 	}
 
-	currentProcessingIndex := -1
+	resultPath, err := mw.Cli.Download(job.Ctx, opts)
+
+	mw.finishSingleJob(job, resultPath, err)
+}
+
+func (mw *MainWindow) processPlaylistJob(job *DownloadJob) {
+	mw.JobsMu.Lock()
+	if job.Status == StatusCancelled {
+		mw.JobsMu.Unlock()
+		return
+	}
+	job.Status = StatusDownloading
+	mw.JobsMu.Unlock()
+
+	mw.UpdMu.Lock()
+	mw.Downloading = true
+	mw.UpdMu.Unlock()
+
+	mw.updateDownloadsBadge()
+
+	safeName := sanitizeFileName(job.Title)
+	if idx := strings.LastIndex(safeName, " ("); idx != -1 {
+		safeName = safeName[:idx]
+	}
+	if safeName == "" {
+		safeName = "Playlist"
+	}
+	targetDir := filepath.Join(job.OutputDir, safeName)
+	os.MkdirAll(targetDir, 0755)
+	job.TargetDir = targetDir
+
 	totalSelected := 0
 	for _, chk := range job.PlaylistChecks {
 		if chk {
 			totalSelected++
 		}
 	}
-	finishedCount := 0
 
-	resultPath, err := mw.Cli.Download(job.Ctx, job.URL, job.DlFormat, targetDir, job.FormatSelect, job.BrowserSelect, job.CookiesFilePath, job.AllowPl, job.UseSb, job.Naming, job.SelectedItemsStr,
-		func(p ytdlp.Progress) {
-			pct := parsePercent(p.Pct)
-			job.Progress = pct
-			job.Speed = p.Spd
-			job.ETA = p.Eta
+	fyne.Do(func() {
+		job.UI.StatusLbl.SetText(fmt.Sprintf("Queued: 0 / %d videos", totalSelected))
+		job.UI.BtnPauseResume.Show()
+	})
 
-			if mw.shouldLogProgress(pct) {
-				mw.Logger.Dbg(fmt.Sprintf("[download] %s %s eta:%v", p.Pct, p.Spd, p.Eta))
-			}
-
-			fyne.Do(func() {
-				etaSec, _ := strconv.ParseFloat(job.ETA, 64)
-				etaStr := formatDuration(etaSec)
-
-				if job.AllowPl {
-					if currentProcessingIndex != -1 && currentProcessingIndex < len(job.UI.ChildProgs) {
-						if job.UI.ChildProgs[currentProcessingIndex] != nil {
-							job.UI.ChildProgs[currentProcessingIndex].SetValue(pct)
-							job.UI.ChildStats[currentProcessingIndex].SetText(fmt.Sprintf("%s | ETA: %s", emptyToDash(job.Speed), etaStr))
-						}
-					}
-					overallPct := (float64(finishedCount*100) + pct) / float64(totalSelected)
-					job.UI.ProgBar.SetValue(overallPct)
-					job.UI.StatusLbl.SetText(fmt.Sprintf("Downloading: %d / %d videos", finishedCount+1, totalSelected))
-				} else {
-					job.UI.ProgBar.SetValue(pct)
-					job.UI.StatusLbl.SetText(fmt.Sprintf("Speed: %s | ETA: %s", emptyToDash(job.Speed), etaStr))
-				}
-			})
-		},
-		func(line string) {
-			mw.Logger.Info(line)
-			if job.AllowPl {
-				for i, entry := range job.PlaylistEntries {
-					if job.PlaylistChecks[i] && strings.Contains(line, entry.ID) {
-						if currentProcessingIndex != i {
-							prev := currentProcessingIndex
-							currentProcessingIndex = i
-
-							fyne.Do(func() {
-								if prev != -1 && prev < len(job.UI.ChildProgs) {
-									if job.UI.ChildProgs[prev] != nil {
-										job.UI.ChildProgs[prev].SetValue(100)
-										job.UI.ChildStats[prev].SetText("Ready ✅")
-									}
-									finishedCount++
-								}
-								if i < len(job.UI.ChildStats) && job.UI.ChildStats[i] != nil {
-									job.UI.ChildStats[i].SetText("Downloading...")
-								}
-							})
-						}
-						break
-					}
-				}
-			}
-		},
+	var (
+		wg            sync.WaitGroup
+		finishedMu    sync.Mutex
+		finishedCount int
+		errorCount    int
 	)
 
-	if err == nil && job.AllowPl && currentProcessingIndex != -1 {
-		fyne.Do(func() {
-			if currentProcessingIndex < len(job.UI.ChildProgs) && job.UI.ChildProgs[currentProcessingIndex] != nil {
-				job.UI.ChildProgs[currentProcessingIndex].SetValue(100)
-				job.UI.ChildStats[currentProcessingIndex].SetText("Ready ✅")
+	for i, chk := range job.PlaylistChecks {
+		if !chk {
+			continue
+		}
+
+		realIdx := i
+		playlistPos := i + 1
+
+		listIdx := findListIdx(job.UI.ActiveIndices, realIdx)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			select {
+			case <-job.Ctx.Done():
+				return
+			case mw.DlSemaphore <- struct{}{}:
 			}
-			job.UI.ProgBar.SetValue(100)
-		})
+			defer func() { <-mw.DlSemaphore }()
+
+			mw.JobsMu.Lock()
+			if job.Status == StatusCancelled {
+				mw.JobsMu.Unlock()
+				return
+			}
+			mw.JobsMu.Unlock()
+
+			if listIdx >= 0 {
+				fyne.Do(func() {
+					job.UI.ChildStats[realIdx] = StatusDownloading
+					job.UI.ChildList.RefreshItem(widget.ListItemID(listIdx))
+				})
+			}
+
+			opts := ytdlp.DownloadOptions{
+				URL:             job.URL,
+				Format:          job.DlFormat,
+				OutDir:          targetDir,
+				MergeFormat:     job.FormatSelect,
+				Browser:         job.BrowserSelect,
+				CookiesFile:     job.CookiesFilePath,
+				AllowPlaylist:   true,
+				UseSponsorBlock: job.UseSb,
+				NameTemplate:    job.Naming,
+
+				SelectedItems: strconv.Itoa(playlistPos),
+				CustomArgs:    job.CustomArgs,
+				EmbedMeta:     job.EmbedMeta,
+				OnStart: func(files []string) {
+					job.TouchedMu.Lock()
+					for _, f := range files {
+						found := false
+						for _, e := range job.TouchedFiles {
+							if e == f {
+								found = true
+								break
+							}
+						}
+						if !found {
+							job.TouchedFiles = append(job.TouchedFiles, f)
+						}
+					}
+					job.TouchedMu.Unlock()
+				},
+				OnProgress: func(p ytdlp.Progress) {
+					pct := parsePercent(p.Pct)
+					if mw.shouldLogProgress(pct) {
+						mw.Logger.Dbg(fmt.Sprintf("[playlist #%d] %s %s eta:%v", playlistPos, p.Pct, p.Spd, p.Eta))
+					}
+					if listIdx < 0 {
+						return
+					}
+					fyne.Do(func() {
+						etaSec, _ := strconv.ParseFloat(p.Eta, 64)
+						job.UI.ChildProgs[realIdx] = pct
+						job.UI.ChildStats[realIdx] = fmt.Sprintf("%s | ETA: %s", emptyToDash(p.Spd), formatDuration(etaSec))
+						job.UI.ChildList.RefreshItem(widget.ListItemID(listIdx))
+
+						finishedMu.Lock()
+						fc := finishedCount
+						finishedMu.Unlock()
+						overall := (float64(fc*100) + pct) / float64(totalSelected)
+						job.UI.ProgBar.SetValue(overall)
+					})
+				},
+				OnLine: func(line string) { mw.Logger.Info(line) },
+			}
+
+			_, err := mw.Cli.Download(job.Ctx, opts)
+
+			finishedMu.Lock()
+			if err == nil || job.Ctx.Err() == nil {
+
+				finishedCount++
+				if err != nil {
+					errorCount++
+				}
+			}
+			fc := finishedCount
+			finishedMu.Unlock()
+
+			childStatus := StatusReady
+			if err != nil && job.Ctx.Err() == nil {
+				childStatus = StatusError
+			} else if job.Ctx.Err() != nil {
+				childStatus = StatusCancelled
+			}
+
+			if listIdx >= 0 {
+				fyne.Do(func() {
+					job.UI.ChildProgs[realIdx] = 100
+					job.UI.ChildStats[realIdx] = childStatus
+					job.UI.ChildList.RefreshItem(widget.ListItemID(listIdx))
+
+					overall := float64(fc) * 100 / float64(totalSelected)
+					job.UI.ProgBar.SetValue(overall)
+					job.UI.StatusLbl.SetText(fmt.Sprintf("Downloading: %d / %d videos", fc, totalSelected))
+				})
+			}
+		}()
 	}
 
+	wg.Wait()
+
+	mw.JobsMu.Lock()
+	finalStatus := job.Status
+	if finalStatus != StatusCancelled && finalStatus != StatusPaused {
+		finishedMu.Lock()
+		ec := errorCount
+		finishedMu.Unlock()
+		if ec == 0 {
+			job.Status = StatusDone
+		} else {
+			job.Status = StatusError
+		}
+		finalStatus = job.Status
+	}
+	mw.JobsMu.Unlock()
+
+	fyne.Do(func() {
+		job.UI.ProgBar.SetValue(100)
+		job.UI.BtnCancel.Disable()
+		job.UI.BtnPauseResume.Disable()
+		switch finalStatus {
+		case StatusDone:
+			job.UI.StatusLbl.SetText(StatusDone)
+
+			if job.UI.BtnOpenDir != nil {
+				savedDir := job.TargetDir
+				job.UI.BtnOpenDir.OnTapped = func() {
+					_ = openFolderDirect(savedDir)
+				}
+				job.UI.BtnOpenDir.Show()
+			}
+		case StatusError:
+			job.UI.StatusLbl.SetText(StatusError)
+		case StatusCancelled:
+			job.UI.StatusLbl.SetText(StatusCancelled)
+		}
+	})
+
+	switch finalStatus {
+	case StatusDone:
+		mw.App.SendNotification(fyne.NewNotification("Playlist Complete ✅", job.Title))
+		playDoneSound()
+	case StatusError:
+		mw.App.SendNotification(fyne.NewNotification("Playlist had errors", job.Title))
+	}
+
+	mw.updateDownloadsBadge()
+
+	mw.JobsMu.Lock()
+	anyActive := false
+	for _, j := range mw.Jobs {
+		if j.Status == StatusDownloading || j.Status == StatusQueued || j.Status == StatusStarting {
+			anyActive = true
+			break
+		}
+	}
+	mw.JobsMu.Unlock()
+
+	if !anyActive {
+		mw.UpdMu.Lock()
+		mw.Downloading = false
+		mw.UpdMu.Unlock()
+	}
+}
+
+func (mw *MainWindow) finishSingleJob(job *DownloadJob, resultPath string, err error) {
 	if err != nil {
 		if job.Ctx.Err() != nil {
 			mw.JobsMu.Lock()
-			job.Status = "Cancelled"
-			mw.JobsMu.Unlock()
-			fyne.Do(func() { job.UI.StatusLbl.SetText("Cancelled") })
+			switch job.Status {
+			case StatusPaused, StatusCancelled:
+				mw.JobsMu.Unlock()
+			default:
+				job.Status = StatusCancelled
+				mw.JobsMu.Unlock()
+				fyne.Do(func() {
+					job.UI.StatusLbl.SetText(StatusCancelled)
+					job.UI.BtnPauseResume.Disable()
+					job.UI.BtnCancel.Disable()
+				})
+			}
 		} else {
 			mw.JobsMu.Lock()
-			job.Status = "Error"
-			mw.JobsMu.Unlock()
-			fyne.Do(func() { job.UI.StatusLbl.SetText("Error") })
-			mw.App.SendNotification(fyne.NewNotification("Download Failed", job.Title))
+			if job.Status == StatusPaused || job.Status == StatusCancelled {
+				mw.JobsMu.Unlock()
+			} else {
+				job.Status = StatusError
+				mw.JobsMu.Unlock()
+				fyne.Do(func() {
+					job.UI.StatusLbl.SetText(StatusError)
+					job.UI.BtnPauseResume.Disable()
+					job.UI.BtnCancel.Disable()
+				})
+				mw.App.SendNotification(fyne.NewNotification("Download Failed", job.Title))
+			}
 		}
 	} else {
 		mw.JobsMu.Lock()
-		job.Status = "Done ✅"
+		job.Status = StatusDone
 		mw.JobsMu.Unlock()
 		job.Progress = 100
 		fyne.Do(func() {
-			job.UI.StatusLbl.SetText("Done ✅")
+			job.UI.StatusLbl.SetText(StatusDone)
 			job.UI.ProgBar.SetValue(100)
 			job.UI.BtnCancel.Disable()
+			job.UI.BtnPauseResume.Disable()
+			if job.UI.BtnOpenDir != nil {
+				savedDir := job.OutputDir
+				job.UI.BtnOpenDir.OnTapped = func() {
+					_ = showFileInFolder(resultPath, savedDir)
+				}
+				job.UI.BtnOpenDir.Show()
+			}
 		})
 		mw.App.SendNotification(fyne.NewNotification("Download Complete ✅", job.Title))
 		playDoneSound()
@@ -606,7 +858,7 @@ func (mw *MainWindow) processJob(job *DownloadJob) {
 	mw.JobsMu.Lock()
 	anyActive := false
 	for _, j := range mw.Jobs {
-		if j.Status == "Downloading..." || j.Status == "Queued" || j.Status == "Starting..." {
+		if j.Status == StatusDownloading || j.Status == StatusQueued || j.Status == StatusStarting {
 			anyActive = true
 			break
 		}

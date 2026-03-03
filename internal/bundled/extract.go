@@ -315,11 +315,11 @@ func ensureLatestFFmpegWin64(ctx context.Context, binDir string, onProgress func
 
 	checksText, err := downloadText(ctx, checksURL)
 	if err != nil {
-		return "", fmt.Errorf("ffmpeg: download checksums: %w", err)
+		return "", fmt.Errorf("ffmpeg: download checksums failed. Please download FFmpeg manually to %s: %w", binDir, err)
 	}
 	zipSHA, err := parseChecksumFileSha256(checksText, zipName)
 	if err != nil {
-		return "", fmt.Errorf("ffmpeg: parse checksums: %w", err)
+		return "", fmt.Errorf("ffmpeg: failed to parse checksums for %s. The release format might have changed. Please download FFmpeg manually from https://github.com/BtbN/FFmpeg-Builds/releases and extract ffmpeg.exe and ffprobe.exe to %s. Error: %w", zipName, binDir, err)
 	}
 
 	ff := filepath.Join(binDir, "ffmpeg.exe")
