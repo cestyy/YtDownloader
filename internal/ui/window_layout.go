@@ -18,9 +18,11 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	)
 
 	topRow := container.NewBorder(nil, nil, widget.NewLabel("URL:"), nil, mw.UrlEntry)
-	dirRow := container.NewHBox(
-		widget.NewLabel("Save to:"), mw.OutDirLabel,
-		layout.NewSpacer(), mw.BtnChooseDir, mw.BtnOpenFolder,
+	dirRow := container.NewBorder(
+		nil, nil,
+		widget.NewLabel("Save to:"),
+		container.NewHBox(mw.BtnChooseDir, mw.BtnOpenFolder),
+		mw.OutDirLabel,
 	)
 
 	btnRow := container.NewHBox(mw.BtnDownload, mw.BtnBest, layout.NewSpacer())
@@ -31,8 +33,9 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	)
 	left := container.NewBorder(leftTop, nil, nil, nil, container.NewMax(mw.FormatList))
 
-	mw.PreviewContainer = container.NewVBox(
-		widget.NewLabel("Preview:"), mw.PreviewTitle, mw.PreviewImg,
+	previewCenter := container.NewBorder(mw.PreviewTitle, nil, nil, nil, mw.PreviewImg)
+	mw.PreviewContainer = container.NewBorder(
+		widget.NewLabel("Preview:"), nil, nil, nil, previewCenter,
 	)
 	playlistTopBtn := container.NewHBox(mw.BtnSelectAll, mw.BtnUnselectAll, layout.NewSpacer(), mw.SelectedCount)
 	mw.PlaylistPanel = container.NewBorder(playlistTopBtn, nil, nil, nil, mw.PlaylistList)
@@ -49,39 +52,22 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	mainSplit.Offset = 0.50
 
 	queueScroll := container.NewVScroll(mw.QueueBox)
-	queueTop := container.NewHBox(widget.NewLabelWithStyle("Active & Queued Downloads", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), layout.NewSpacer(), mw.BtnClearQueue)
+	queueTop := container.NewHBox(
+		widget.NewLabelWithStyle("Active & Queued Downloads", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		layout.NewSpacer(),
+		mw.BtnClearQueue,
+	)
 	queueLayout := container.NewBorder(queueTop, nil, nil, nil, queueScroll)
 
-	settingsView := container.NewVBox(
-		widget.NewLabelWithStyle("Application Settings", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewSeparator(),
-		widget.NewLabel("Appearance"), mw.ThemeSelect,
-		widget.NewSeparator(),
-		widget.NewLabel("Downloads"),
-		mw.CheckSponsorBlock,
-		mw.CheckRedownload,
-		widget.NewLabel("File Naming Template"),
-		mw.NamingSelect,
-		widget.NewSeparator(),
-		widget.NewLabel("Output Format (video/audio)"), mw.FormatSelect,
-		widget.NewSeparator(),
-		widget.NewLabel("Bypass YouTube Bot Check"), mw.BrowserSelect,
-		container.NewHBox(mw.BtnCookiesSelect, mw.BtnCookiesClear),
-		mw.CookiesFileLabel,
-		widget.NewSeparator(),
-		widget.NewLabel("Tools (yt-dlp & ffmpeg)"),
-		container.NewHBox(mw.ToolsStatus, mw.ToolsBusy),
-		container.NewHBox(mw.BtnToolsUpdate, mw.BtnToolsCancel, mw.BtnToolsFolder),
+	settingsLayout := container.NewBorder(nil, nil, nil, nil,
+		container.NewVScroll(mw.buildSettingsTab()),
 	)
-
-	settingsLayout := container.NewBorder(settingsView, nil, nil, nil, nil)
 
 	logsTop := container.NewVBox(
 		widget.NewLabelWithStyle("System Logs & Output", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		mw.Logger.Controls(mw.Window),
 		widget.NewSeparator(),
 	)
-
 	logsLayout := container.NewBorder(logsTop, nil, nil, nil, container.NewMax(mw.Logger.Widget()))
 
 	mw.DownloadsTab = container.NewTabItemWithIcon("Downloads", theme.DownloadIcon(), queueLayout)
@@ -94,4 +80,58 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	mw.Tabs.SetTabLocation(container.TabLocationLeading)
 
 	return container.NewMax(mw.Tabs)
+}
+
+// buildSettingsTab constructs the settings content grouped into card-like sections.
+func (mw *MainWindow) buildSettingsTab() *fyne.Container {
+	return container.NewVBox(
+
+		settingsSectionHeader("🎨  Appearance"),
+		settingsRow("Theme", mw.ThemeSelect),
+
+		widget.NewSeparator(),
+
+		settingsSectionHeader("⬇️  Download"),
+		mw.CheckSponsorBlock,
+		mw.CheckRedownload,
+		mw.CheckEmbedMeta,
+		settingsRow("Output format (video/audio)", mw.FormatSelect),
+		settingsRow("File naming template", mw.NamingSelect),
+		settingsRow("Parallel downloads", mw.ConcurrentSelect),
+		settingsLabel("Custom yt-dlp arguments"),
+		mw.CustomArgsEntry,
+
+		widget.NewSeparator(),
+
+		settingsSectionHeader("🔑  Authentication"),
+		settingsLabel("Browser (for cookie bypass):"),
+		mw.BrowserSelect,
+		settingsLabel("Or use a cookies.txt file:"),
+		container.NewHBox(mw.BtnCookiesSelect, mw.BtnCookiesClear),
+		mw.CookiesFileLabel,
+
+		widget.NewSeparator(),
+
+		settingsSectionHeader("🔧  Tools (yt-dlp & ffmpeg)"),
+		settingsRow("Status", mw.ToolsStatus),
+		mw.ToolsBusy,
+		container.NewHBox(mw.BtnToolsUpdate, mw.BtnToolsCancel, mw.BtnToolsFolder),
+	)
+}
+
+// settingsSectionHeader creates a bold section heading label.
+func settingsSectionHeader(title string) *widget.Label {
+	return widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+}
+
+// settingsLabel creates a small descriptive label for a settings row.
+func settingsLabel(text string) *widget.Label {
+	return widget.NewLabel(text)
+}
+
+// settingsRow combines a label and a widget in a horizontal layout,
+// so the label appears on the left and the control fills the remaining space.
+func settingsRow(label string, control fyne.CanvasObject) *fyne.Container {
+	lbl := widget.NewLabel(label)
+	return container.NewBorder(nil, nil, lbl, nil, control)
 }

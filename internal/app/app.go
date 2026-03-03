@@ -38,6 +38,10 @@ func initFileLogging(appName string) (closer func(), logPath string, err error) 
 	}
 	logPath = filepath.Join(logDir, "app.log")
 
+	if st, err := os.Stat(logPath); err == nil && st.Size() > 5*1024*1024 {
+		_ = os.Rename(logPath, logPath+".old")
+	}
+
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, "", err

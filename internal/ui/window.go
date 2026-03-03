@@ -11,50 +11,9 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
-
-type JobUI struct {
-	Root       *fyne.Container
-	ProgBar    *widget.ProgressBar
-	StatusLbl  *widget.Label
-	BtnCancel  *widget.Button
-	ExpandBtn  *widget.Button
-	ChildBox   *fyne.Container
-	ChildProgs []*widget.ProgressBar
-	ChildStats []*widget.Label
-}
-
-type DownloadJob struct {
-	Title            string
-	URL              string
-	DlFormat         string
-	OutputDir        string
-	FormatSelect     string
-	BrowserSelect    string
-	CookiesFilePath  string
-	AllowPl          bool
-	UseSb            bool
-	Naming           string
-	SelectedItemsStr string
-
-	PlaylistEntries []ytdlp.PlaylistEntry
-	PlaylistChecks  []bool
-
-	Status   string
-	Progress float64
-	Speed    string
-	ETA      string
-
-	Thumbnail fyne.Resource
-
-	Ctx    context.Context
-	Cancel context.CancelFunc
-
-	UI *JobUI
-}
 
 type MainWindow struct {
 	App    fyne.App
@@ -63,12 +22,10 @@ type MainWindow struct {
 	State  *State
 	Logger *UILogger
 
-	OutDirLabel      *widget.Label
-	UrlEntry         *widget.Entry
-	Status           *widget.Label
-	DownloadProgress *widget.ProgressBar
-	ProgressInfo     *widget.Label
-	Busy             *widget.ProgressBarInfinite
+	OutDirLabel *widget.Label
+	UrlEntry    *widget.Entry
+	Status      *widget.Label
+	Busy        *widget.ProgressBarInfinite
 
 	PreviewTitle *widget.Label
 	PreviewImg   *canvas.Image
@@ -81,6 +38,7 @@ type MainWindow struct {
 
 	CheckSponsorBlock *widget.Check
 	CheckRedownload   *widget.Check
+	CheckEmbedMeta    *widget.Check
 	NamingSelect      *widget.Select
 
 	CookiesFileLabel *widget.Label
@@ -88,7 +46,12 @@ type MainWindow struct {
 	BtnCookiesSelect *widget.Button
 	BtnCookiesClear  *widget.Button
 
-	PlaylistTitle    string
+	CustomArgsEntry *widget.Entry
+
+	ConcurrentSelect *widget.Select
+
+	PlaylistTitle string
+
 	PlaylistEntries  []ytdlp.PlaylistEntry
 	PlaylistChecks   []bool
 	PlaylistStatuses []string
@@ -155,6 +118,8 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	w.Resize(fyne.NewSize(1200, 740))
 	w.SetFixedSize(true)
 
+	concurrency := concurrencyFromPref(a.Preferences().StringWithFallback("Concurrency", "3"))
+
 	mw := &MainWindow{
 		App:          a,
 		Window:       w,
@@ -165,7 +130,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		ProgStep:     1.0,
 		LastProgPct:  -1,
 		QueueBox:     container.NewVBox(),
-		DlSemaphore:  make(chan struct{}, 3),
+		DlSemaphore:  make(chan struct{}, concurrency),
 	}
 
 	mw.setupWidgets()
@@ -175,25 +140,33 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 	return w
 }
 
+func concurrencyFromPref(s string) int {
+	switch s {
+	case "1":
+		return 1
+	case "2":
+		return 2
+	case "4":
+		return 4
+	case "5":
+		return 5
+	default:
+		return 3
+	}
+}
+
 func (mw *MainWindow) setupWidgets() {
 	mw.OutDirLabel = widget.NewLabel(mw.State.OutputDir)
+	mw.OutDirLabel.Truncation = fyne.TextTruncateEllipsis
 	mw.UrlEntry = widget.NewEntry()
 	mw.UrlEntry.SetPlaceHolder("Paste YouTube link…")
 
 	mw.Status = widget.NewLabel("Ready")
-	mw.DownloadProgress = widget.NewProgressBar()
-	mw.DownloadProgress.Min, mw.DownloadProgress.Max = 0, 100
-	mw.DownloadProgress.SetValue(0)
-
-	mw.ProgressInfo = widget.NewLabel("")
-	mw.ProgressInfo.Alignment = fyne.TextAlignTrailing
-	mw.ProgressInfo.TextStyle = fyne.TextStyle{Italic: true}
-
 	mw.Busy = widget.NewProgressBarInfinite()
 	mw.Busy.Hide()
 
 	mw.PreviewTitle = widget.NewLabel("—")
-	mw.PreviewTitle.Wrapping = fyne.TextWrapWord
+	mw.PreviewTitle.Truncation = fyne.TextTruncateEllipsis
 	mw.PreviewImg = canvas.NewImageFromResource(nil)
 	mw.PreviewImg.FillMode = canvas.ImageFillContain
 	mw.PreviewImg.SetMinSize(fyne.NewSize(560, 310))
@@ -211,12 +184,23 @@ func (mw *MainWindow) setupWidgets() {
 	mw.BtnCookiesClear = widget.NewButton("Clear", nil)
 	mw.BtnCookiesClear.Disable()
 
+	mw.CustomArgsEntry = widget.NewEntry()
+	mw.CustomArgsEntry.SetPlaceHolder("e.g. --limit-rate 5M")
+
 	savedTheme := mw.App.Preferences().StringWithFallback("Theme", "Dark")
 	mw.ThemeSelect = widget.NewSelect([]string{"Dark", "Light", "Pink", "Ocean"}, func(s string) {
 		mw.App.Settings().SetTheme(&customTheme{themeName: s})
 		mw.App.Preferences().SetString("Theme", s)
 	})
 	mw.ThemeSelect.SetSelected(savedTheme)
+
+	savedConcurrent := mw.App.Preferences().StringWithFallback("Concurrency", "3")
+	mw.ConcurrentSelect = widget.NewSelect([]string{"1", "2", "3", "4", "5"}, func(s string) {
+		mw.App.Preferences().SetString("Concurrency", s)
+		cap := concurrencyFromPref(s)
+		mw.DlSemaphore = make(chan struct{}, cap)
+	})
+	mw.ConcurrentSelect.SetSelected(savedConcurrent)
 
 	mw.BtnDownload = widget.NewButton("Download selected", nil)
 	mw.BtnDownload.Disable()
@@ -253,6 +237,11 @@ func (mw *MainWindow) setupWidgets() {
 	})
 	mw.CheckRedownload.SetChecked(mw.App.Preferences().BoolWithFallback("Redownload", false))
 
+	mw.CheckEmbedMeta = widget.NewCheck("Embed Metadata & Thumbnail", func(b bool) {
+		mw.App.Preferences().SetBool("EmbedMeta", b)
+	})
+	mw.CheckEmbedMeta.SetChecked(mw.App.Preferences().BoolWithFallback("EmbedMeta", false))
+
 	mw.SelectedCount = widget.NewLabel("")
 	mw.SelectedCount.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -288,22 +277,38 @@ func (mw *MainWindow) setupWidgets() {
 		mw.JobsMu.Lock()
 		var active []*DownloadJob
 		var toRemove []fyne.CanvasObject
+		var toClean []*DownloadJob
+
 		for _, j := range mw.Jobs {
-			if j.Status == "Queued" || j.Status == "Downloading..." || j.Status == "Starting..." {
+			if j.Status == StatusQueued || j.Status == StatusDownloading || j.Status == StatusStarting {
 				active = append(active, j)
 			} else {
 				if j.UI != nil && j.UI.Root != nil {
 					toRemove = append(toRemove, j.UI.Root)
+				}
+				if j.AllowPl {
+					for _, entry := range j.PlaylistEntries {
+						thumbCache.Delete(entry.ID)
+					}
+				}
+				if j.Status != StatusDone {
+					toClean = append(toClean, j)
 				}
 			}
 		}
 		mw.Jobs = active
 		mw.JobsMu.Unlock()
 
-		for _, o := range toRemove {
-			mw.QueueBox.Remove(o)
+		for _, j := range toClean {
+			go j.cleanupTouchedFiles()
 		}
-		mw.QueueBox.Refresh()
+
+		fyne.Do(func() {
+			for _, o := range toRemove {
+				mw.QueueBox.Remove(o)
+			}
+			mw.QueueBox.Refresh()
+		})
 		mw.updateDownloadsBadge()
 	})
 
@@ -324,255 +329,4 @@ func (mw *MainWindow) updateSelectedCount() {
 	fyne.Do(func() {
 		mw.SelectedCount.SetText(fmt.Sprintf("Selected: %d / %d", count, len(mw.PlaylistEntries)))
 	})
-}
-
-func (mw *MainWindow) buildJobUI(job *DownloadJob) *JobUI {
-	ui := &JobUI{}
-
-	titleLbl := widget.NewLabelWithStyle(job.Title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	titleLbl.Truncation = fyne.TextTruncateEllipsis
-
-	ui.ProgBar = widget.NewProgressBar()
-	ui.ProgBar.Min, ui.ProgBar.Max = 0, 100
-
-	ui.StatusLbl = widget.NewLabel("Queued")
-	ui.StatusLbl.TextStyle = fyne.TextStyle{Italic: true}
-
-	ui.BtnCancel = widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
-		if job.Cancel != nil {
-			job.Cancel()
-		}
-
-		mw.JobsMu.Lock()
-		job.Status = "Cancelled"
-		mw.JobsMu.Unlock()
-
-		ui.StatusLbl.SetText("Cancelled")
-		ui.BtnCancel.Disable()
-		mw.updateDownloadsBadge()
-	})
-
-	var rightControls *fyne.Container
-	if job.AllowPl {
-		ui.ExpandBtn = widget.NewButtonWithIcon("", theme.MenuDropDownIcon(), nil)
-		rightControls = container.NewHBox(ui.ExpandBtn, ui.BtnCancel)
-	} else {
-		rightControls = container.NewHBox(ui.BtnCancel)
-	}
-
-	progRow := container.NewBorder(nil, nil, nil, rightControls, ui.ProgBar)
-	mainContent := container.NewVBox(titleLbl, progRow, ui.StatusLbl)
-
-	img := canvas.NewImageFromResource(theme.FileImageIcon())
-	img.SetMinSize(fyne.NewSize(80, 45))
-	img.FillMode = canvas.ImageFillContain
-
-	if job.Thumbnail != nil {
-		img.Resource = job.Thumbnail
-	} else if job.AllowPl && len(job.PlaylistEntries) > 0 {
-		firstID := ""
-		for i, chk := range job.PlaylistChecks {
-			if chk && i < len(job.PlaylistEntries) {
-				firstID = job.PlaylistEntries[i].ID
-				break
-			}
-		}
-		if firstID == "" {
-			firstID = job.PlaylistEntries[0].ID
-		}
-
-		cached, ok := thumbCache.Load(firstID)
-		if ok && cached != "loading" {
-			if res, isRes := cached.(fyne.Resource); isRes {
-				img.Resource = res
-			}
-		} else if !ok {
-			thumbCache.Store(firstID, "loading")
-			go func(id string) {
-				thumbURL := fmt.Sprintf("https://img.youtube.com/vi/%s/mqdefault.jpg", id)
-				res := loadRemoteImageResource(thumbURL)
-				if res != nil {
-					thumbCache.Store(id, res)
-					fyne.Do(func() {
-						img.Resource = res
-						img.Refresh()
-					})
-				} else {
-					thumbCache.Delete(id)
-				}
-			}(firstID)
-		}
-	}
-
-	left := container.NewHBox(img)
-
-	if job.AllowPl {
-		ui.ChildBox = container.NewVBox()
-		ui.ChildBox.Hide()
-
-		ui.ExpandBtn.OnTapped = func() {
-			if ui.ChildBox.Hidden {
-				ui.ChildBox.Show()
-				ui.ExpandBtn.SetIcon(theme.MenuDropUpIcon())
-			} else {
-				ui.ChildBox.Hide()
-				ui.ExpandBtn.SetIcon(theme.MenuDropDownIcon())
-			}
-		}
-
-		ui.ChildProgs = make([]*widget.ProgressBar, len(job.PlaylistEntries))
-		ui.ChildStats = make([]*widget.Label, len(job.PlaylistEntries))
-
-		for i, entry := range job.PlaylistEntries {
-			if job.PlaylistChecks[i] {
-				cTitle := widget.NewLabel(fmt.Sprintf("%d. %s", i+1, entry.Title))
-				cTitle.Truncation = fyne.TextTruncateEllipsis
-				cProg := widget.NewProgressBar()
-				cProg.Min, cProg.Max = 0, 100
-				cStat := widget.NewLabel("Queued")
-				cStat.TextStyle = fyne.TextStyle{Italic: true}
-
-				ui.ChildProgs[i] = cProg
-				ui.ChildStats[i] = cStat
-
-				cProgRow := container.NewBorder(nil, nil, nil, cStat, cProg)
-				cRow := container.NewBorder(nil, nil, nil, nil, container.NewVBox(cTitle, cProgRow))
-				indented := container.NewBorder(nil, nil, widget.NewLabel("    └─ "), nil, cRow)
-				ui.ChildBox.Add(indented)
-			}
-		}
-	}
-
-	header := container.NewBorder(nil, nil, left, nil, mainContent)
-
-	if job.AllowPl {
-		ui.Root = container.NewVBox(header, ui.ChildBox, widget.NewSeparator())
-	} else {
-		ui.Root = container.NewVBox(header, widget.NewSeparator())
-	}
-
-	return ui
-}
-
-func (mw *MainWindow) setupFormatList() {
-	mw.FormatList = widget.NewList(
-		func() int { return len(mw.FormatsView) },
-		func() fyne.CanvasObject {
-			l1 := widget.NewLabel("")
-			l1.TextStyle = fyne.TextStyle{Bold: true}
-			l2 := widget.NewLabel("")
-			l2.Wrapping = fyne.TextWrapWord
-			return container.NewVBox(l1, l2)
-		},
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			f := mw.FormatsView[i]
-			v := o.(*fyne.Container)
-			l1 := v.Objects[0].(*widget.Label)
-			l2 := v.Objects[1].(*widget.Label)
-
-			res := "Audio"
-			if f.Height > 0 {
-				res = fmt.Sprintf("%dp", f.Height)
-			} else if f.Width > 0 {
-				res = fmt.Sprintf("%dp", f.Width)
-			}
-
-			sizeBytes := f.Filesize
-			if sizeBytes == 0 {
-				sizeBytes = f.FilesizeApprox
-			}
-			l1.SetText(fmt.Sprintf("%s  •  %s  •  Time: %s", res, formatBytes(sizeBytes), formatDuration(mw.CurrentVideoDuration)))
-
-			fps := ""
-			if f.FPS > 0 {
-				fps = fmt.Sprintf(" | fps: %v", f.FPS)
-			}
-			l2.SetText(fmt.Sprintf("fmt: %s | ext: %s%s | v: %s a: %s", emptyToDash(f.FormatID), f.Ext, fps, emptyToDash(f.VCodec), emptyToDash(f.ACodec)))
-		},
-	)
-}
-
-var thumbCache sync.Map
-
-func (mw *MainWindow) setupPlaylistList() {
-	mw.PlaylistList = widget.NewList(
-		func() int { return len(mw.PlaylistEntries) },
-		func() fyne.CanvasObject {
-			chk := widget.NewCheck("", nil)
-
-			img := canvas.NewImageFromResource(theme.FileImageIcon())
-			img.SetMinSize(fyne.NewSize(80, 45))
-			img.FillMode = canvas.ImageFillContain
-
-			title := widget.NewLabel("Title")
-			title.TextStyle.Bold = true
-			title.Truncation = fyne.TextTruncateEllipsis
-
-			author := widget.NewLabel("Author")
-			author.TextStyle = fyne.TextStyle{Italic: true}
-
-			statusLbl := widget.NewLabel("")
-			statusLbl.TextStyle = fyne.TextStyle{Bold: true}
-
-			bottomRow := container.NewHBox(author, layout.NewSpacer(), statusLbl)
-			vbox := container.NewVBox(title, bottomRow)
-
-			return container.NewBorder(nil, nil, container.NewHBox(chk, img), nil, vbox)
-		},
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			entry := mw.PlaylistEntries[i]
-			c := o.(*fyne.Container)
-
-			leftHbox := c.Objects[1].(*fyne.Container)
-			chk := leftHbox.Objects[0].(*widget.Check)
-			img := leftHbox.Objects[1].(*canvas.Image)
-
-			vbox := c.Objects[0].(*fyne.Container)
-			title := vbox.Objects[0].(*widget.Label)
-
-			bottomRow := vbox.Objects[1].(*fyne.Container)
-			author := bottomRow.Objects[0].(*widget.Label)
-			statusLbl := bottomRow.Objects[2].(*widget.Label)
-
-			title.SetText(fmt.Sprintf("%d. %s", i+1, entry.Title))
-			author.SetText(entry.Uploader)
-
-			statusLbl.SetText(mw.PlaylistStatuses[i])
-
-			chk.Checked = mw.PlaylistChecks[i]
-			chk.OnChanged = func(b bool) {
-				mw.PlaylistChecks[i] = b
-				mw.updateSelectedCount()
-			}
-			chk.Refresh()
-
-			img.Resource = theme.FileImageIcon()
-
-			cached, ok := thumbCache.Load(entry.ID)
-			if ok && cached != "loading" {
-				if res, isRes := cached.(fyne.Resource); isRes {
-					img.Resource = res
-				}
-			} else if !ok {
-				thumbCache.Store(entry.ID, "loading")
-				thumbURL := fmt.Sprintf("https://img.youtube.com/vi/%s/mqdefault.jpg", entry.ID)
-
-				go func(id, url string, index widget.ListItemID) {
-					res := loadRemoteImageResource(url)
-					if res != nil {
-						thumbCache.Store(id, res)
-						fyne.Do(func() {
-							if mw.PlaylistList != nil {
-								mw.PlaylistList.RefreshItem(index)
-							}
-						})
-					} else {
-						thumbCache.Delete(id)
-					}
-				}(entry.ID, thumbURL, i)
-			}
-
-			img.Refresh()
-		},
-	)
 }
