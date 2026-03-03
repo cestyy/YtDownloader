@@ -114,6 +114,8 @@ type MainWindow struct {
 }
 
 func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
+	InitLang(a)
+
 	savedTheme := a.Preferences().StringWithFallback("Theme", "Dark")
 	a.Settings().SetTheme(&customTheme{themeName: savedTheme})
 
@@ -163,9 +165,9 @@ func (mw *MainWindow) setupWidgets() {
 	mw.OutDirLabel = widget.NewLabel(mw.State.OutputDir)
 	mw.OutDirLabel.Truncation = fyne.TextTruncateEllipsis
 	mw.UrlEntry = widget.NewEntry()
-	mw.UrlEntry.SetPlaceHolder("Paste YouTube link…")
+	mw.UrlEntry.SetPlaceHolder(T("paste_url"))
 
-	mw.Status = widget.NewLabel("Ready")
+	mw.Status = widget.NewLabel(T("ready"))
 	mw.Busy = widget.NewProgressBarInfinite()
 	mw.Busy.Hide()
 
@@ -182,14 +184,14 @@ func (mw *MainWindow) setupWidgets() {
 	mw.BrowserSelect = widget.NewSelect([]string{"none", "chrome", "edge", "firefox", "opera", "brave", "safari", "vivaldi"}, nil)
 	mw.BrowserSelect.SetSelected("none")
 
-	mw.CookiesFileLabel = widget.NewLabel("No cookies.txt selected")
+	mw.CookiesFileLabel = widget.NewLabel(T("no_cookies"))
 	mw.CookiesFileLabel.Truncation = fyne.TextTruncateEllipsis
-	mw.BtnCookiesSelect = widget.NewButton("Select cookies.txt", nil)
-	mw.BtnCookiesClear = widget.NewButton("Clear", nil)
+	mw.BtnCookiesSelect = widget.NewButton(T("select_cookies"), nil)
+	mw.BtnCookiesClear = widget.NewButton(T("clear"), nil)
 	mw.BtnCookiesClear.Disable()
 
 	mw.CustomArgsEntry = widget.NewEntry()
-	mw.CustomArgsEntry.SetPlaceHolder("e.g. --limit-rate 5M")
+	mw.CustomArgsEntry.SetPlaceHolder(T("custom_args_eg"))
 
 	savedTheme := mw.App.Preferences().StringWithFallback("Theme", "Dark")
 	mw.ThemeSelect = widget.NewSelect([]string{"Dark", "Light", "Pink", "Ocean"}, func(s string) {
@@ -206,45 +208,45 @@ func (mw *MainWindow) setupWidgets() {
 	})
 	mw.ConcurrentSelect.SetSelected(savedConcurrent)
 
-	mw.BtnDownload = widget.NewButton("Download selected", nil)
+	mw.BtnDownload = widget.NewButton(T("download_selected"), nil)
 	mw.BtnDownload.Disable()
 
-	mw.BtnBest = widget.NewButton("Best Video", nil)
+	mw.BtnBest = widget.NewButton(T("best_video"), nil)
 	mw.BtnBest.Disable()
 
-	mw.BtnBestAudio = widget.NewButton("Best Audio", nil)
+	mw.BtnBestAudio = widget.NewButton(T("best_audio"), nil)
 	mw.BtnBestAudio.Disable()
 
-	mw.BtnOpenFolder = widget.NewButton("Open folder", nil)
-	mw.BtnChooseDir = widget.NewButton("Select Directory", nil)
+	mw.BtnOpenFolder = widget.NewButton(T("open_folder"), nil)
+	mw.BtnChooseDir = widget.NewButton(T("select_dir"), nil)
 
 	mw.ResSelect = widget.NewSelect([]string{"All", "4K", "1440p", "1080p", "720p", "480p", "Audio Only"}, nil)
 	mw.ResSelect.SetSelected("All")
 	mw.ExtSelect = widget.NewSelect([]string{"All", "mp4", "webm", "m4a"}, nil)
 	mw.ExtSelect.SetSelected("All")
 
-	mw.ToolsStatus = widget.NewLabel("Tools: ready")
+	mw.ToolsStatus = widget.NewLabel(T("tools_ready"))
 	mw.ToolsBusy = widget.NewProgressBar()
 	mw.ToolsBusy.Min, mw.ToolsBusy.Max = 0, 100
 	mw.ToolsBusy.SetValue(0)
 	mw.ToolsBusy.Hide()
 
-	mw.BtnToolsFolder = widget.NewButton("Tools folder", nil)
-	mw.BtnToolsUpdate = widget.NewButton("Update tools", nil)
-	mw.BtnToolsCancel = widget.NewButton("Cancel update", nil)
+	mw.BtnToolsFolder = widget.NewButton(T("tools_folder"), nil)
+	mw.BtnToolsUpdate = widget.NewButton(T("update_tools"), nil)
+	mw.BtnToolsCancel = widget.NewButton(T("cancel_update"), nil)
 	mw.BtnToolsCancel.Disable()
 
-	mw.CheckSponsorBlock = widget.NewCheck("Remove Sponsor (SponsorBlock)", func(b bool) {
+	mw.CheckSponsorBlock = widget.NewCheck(T("sponsorblock"), func(b bool) {
 		mw.App.Preferences().SetBool("SponsorBlock", b)
 	})
 	mw.CheckSponsorBlock.SetChecked(mw.App.Preferences().BoolWithFallback("SponsorBlock", false))
 
-	mw.CheckRedownload = widget.NewCheck("Force redownload (if already Ready)", func(b bool) {
+	mw.CheckRedownload = widget.NewCheck(T("redownload"), func(b bool) {
 		mw.App.Preferences().SetBool("Redownload", b)
 	})
 	mw.CheckRedownload.SetChecked(mw.App.Preferences().BoolWithFallback("Redownload", false))
 
-	mw.CheckEmbedMeta = widget.NewCheck("Embed Metadata & Thumbnail", func(b bool) {
+	mw.CheckEmbedMeta = widget.NewCheck(T("embed_meta"), func(b bool) {
 		mw.App.Preferences().SetBool("EmbedMeta", b)
 	})
 	mw.CheckEmbedMeta.SetChecked(mw.App.Preferences().BoolWithFallback("EmbedMeta", false))
@@ -252,7 +254,7 @@ func (mw *MainWindow) setupWidgets() {
 	mw.SelectedCount = widget.NewLabel("")
 	mw.SelectedCount.TextStyle = fyne.TextStyle{Bold: true}
 
-	mw.BtnSelectAll = widget.NewButton("Select All", func() {
+	mw.BtnSelectAll = widget.NewButton(T("select_all"), func() {
 		if len(mw.PlaylistChecks) == 0 {
 			return
 		}
@@ -263,7 +265,7 @@ func (mw *MainWindow) setupWidgets() {
 		mw.updateSelectedCount()
 	})
 
-	mw.BtnUnselectAll = widget.NewButton("Unselect all", func() {
+	mw.BtnUnselectAll = widget.NewButton(T("unselect_all"), func() {
 		if len(mw.PlaylistChecks) == 0 {
 			return
 		}
@@ -280,7 +282,7 @@ func (mw *MainWindow) setupWidgets() {
 	})
 	mw.NamingSelect.SetSelected(mw.App.Preferences().StringWithFallback("Naming", namingOption[0]))
 
-	mw.BtnClearQueue = widget.NewButtonWithIcon("Clear Finished", theme.DeleteIcon(), func() {
+	mw.BtnClearQueue = widget.NewButtonWithIcon(T("clear_finished"), theme.DeleteIcon(), func() {
 		mw.JobsMu.Lock()
 		var active []*DownloadJob
 		var toRemove []fyne.CanvasObject
@@ -334,6 +336,6 @@ func (mw *MainWindow) updateSelectedCount() {
 		}
 	}
 	fyne.Do(func() {
-		mw.SelectedCount.SetText(fmt.Sprintf("Selected: %d / %d", count, len(mw.PlaylistEntries)))
+		mw.SelectedCount.SetText(fmt.Sprintf(T("selected_count"), count, len(mw.PlaylistEntries)))
 	})
 }
