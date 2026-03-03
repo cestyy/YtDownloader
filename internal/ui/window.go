@@ -68,6 +68,7 @@ type MainWindow struct {
 	BtnOpenFolder *widget.Button
 	BtnChooseDir  *widget.Button
 	BtnBest       *widget.Button
+	BtnBestAudio  *widget.Button
 
 	ToolsStatus    *widget.Label
 	ToolsBusy      *widget.ProgressBar
@@ -108,6 +109,8 @@ type MainWindow struct {
 
 	Tabs         *container.AppTabs
 	DownloadsTab *container.TabItem
+	HistoryTab   *container.TabItem
+	History      *DownloadHistory
 }
 
 func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
@@ -131,6 +134,7 @@ func ShowMainWindow(a fyne.App, cli *ytdlp.Runner) fyne.Window {
 		LastProgPct:  -1,
 		QueueBox:     container.NewVBox(),
 		DlSemaphore:  make(chan struct{}, concurrency),
+		History:      NewDownloadHistory(a),
 	}
 
 	mw.setupWidgets()
@@ -205,8 +209,11 @@ func (mw *MainWindow) setupWidgets() {
 	mw.BtnDownload = widget.NewButton("Download selected", nil)
 	mw.BtnDownload.Disable()
 
-	mw.BtnBest = widget.NewButton("Download best", nil)
+	mw.BtnBest = widget.NewButton("Best Video", nil)
 	mw.BtnBest.Disable()
+
+	mw.BtnBestAudio = widget.NewButton("Best Audio", nil)
+	mw.BtnBestAudio.Disable()
 
 	mw.BtnOpenFolder = widget.NewButton("Open folder", nil)
 	mw.BtnChooseDir = widget.NewButton("Select Directory", nil)
