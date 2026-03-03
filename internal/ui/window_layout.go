@@ -25,12 +25,13 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 		mw.OutDirLabel,
 	)
 
-	btnRow := container.NewHBox(mw.BtnDownload, mw.BtnBest, layout.NewSpacer())
+	btnRow := container.NewHBox(mw.BtnDownload, mw.BtnBest, mw.BtnBestAudio, layout.NewSpacer())
 
 	leftTop := container.NewVBox(
 		topRow, dirRow, btnRow,
 		widget.NewSeparator(), filterUI, mw.Busy,
 	)
+
 	left := container.NewBorder(leftTop, nil, nil, nil, container.NewMax(mw.FormatList))
 
 	previewCenter := container.NewBorder(mw.PreviewTitle, nil, nil, nil, mw.PreviewImg)
@@ -71,9 +72,12 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	logsLayout := container.NewBorder(logsTop, nil, nil, nil, container.NewMax(mw.Logger.Widget()))
 
 	mw.DownloadsTab = container.NewTabItemWithIcon("Downloads", theme.DownloadIcon(), queueLayout)
+	mw.HistoryTab = container.NewTabItemWithIcon("History", theme.HistoryIcon(), mw.buildHistoryTab())
+
 	mw.Tabs = container.NewAppTabs(
 		container.NewTabItemWithIcon("Main", theme.HomeIcon(), mainSplit),
 		mw.DownloadsTab,
+		mw.HistoryTab,
 		container.NewTabItemWithIcon("Settings", theme.SettingsIcon(), settingsLayout),
 		container.NewTabItemWithIcon("Logs", theme.DocumentIcon(), logsLayout),
 	)
@@ -82,7 +86,6 @@ func (mw *MainWindow) buildLayout() *fyne.Container {
 	return container.NewMax(mw.Tabs)
 }
 
-// buildSettingsTab constructs the settings content grouped into card-like sections.
 func (mw *MainWindow) buildSettingsTab() *fyne.Container {
 	return container.NewVBox(
 
@@ -119,18 +122,14 @@ func (mw *MainWindow) buildSettingsTab() *fyne.Container {
 	)
 }
 
-// settingsSectionHeader creates a bold section heading label.
 func settingsSectionHeader(title string) *widget.Label {
 	return widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 }
 
-// settingsLabel creates a small descriptive label for a settings row.
 func settingsLabel(text string) *widget.Label {
 	return widget.NewLabel(text)
 }
 
-// settingsRow combines a label and a widget in a horizontal layout,
-// so the label appears on the left and the control fills the remaining space.
 func settingsRow(label string, control fyne.CanvasObject) *fyne.Container {
 	lbl := widget.NewLabel(label)
 	return container.NewBorder(nil, nil, lbl, nil, control)

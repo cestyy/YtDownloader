@@ -41,6 +41,7 @@ func (mw *MainWindow) bindEvents() {
 	mw.BtnChooseDir.OnTapped = mw.onChooseDir
 
 	mw.BtnBest.OnTapped = mw.onDownloadBest
+	mw.BtnBestAudio.OnTapped = mw.onDownloadBestAudio
 	mw.BtnDownload.OnTapped = mw.onDownloadSelected
 	mw.BtnToolsUpdate.OnTapped = mw.onToolsUpdate
 	mw.BtnToolsCancel.OnTapped = mw.onToolsCancel
@@ -48,6 +49,20 @@ func (mw *MainWindow) bindEvents() {
 
 	mw.BtnCookiesSelect.OnTapped = mw.onSelectCookies
 	mw.BtnCookiesClear.OnTapped = mw.onClearCookies
+
+	mw.Window.SetOnDropped(func(pos fyne.Position, uris []fyne.URI) {
+		for _, u := range uris {
+			path := u.Path()
+			lower := strings.ToLower(path)
+			if strings.Contains(lower, "cookies") && strings.HasSuffix(lower, ".txt") {
+				mw.CookiesFilePath = path
+				mw.CookiesFileLabel.SetText(path)
+				mw.BtnCookiesClear.Enable()
+				mw.App.SendNotification(fyne.NewNotification("Cookies Loaded", "Loaded from dropped file"))
+				break
+			}
+		}
+	})
 }
 
 func (mw *MainWindow) updateDownloadsBadge() {
@@ -549,7 +564,7 @@ func (mw *MainWindow) processJob(job *DownloadJob) {
 			fyne.Do(func() {
 				etaSec, _ := strconv.ParseFloat(job.ETA, 64)
 				job.UI.ProgBar.SetValue(pct)
-				job.UI.StatusLbl.SetText(fmt.Sprintf("Speed: %s | ETA: %s", emptyToDash(job.Speed), formatDuration(etaSec)))
+				job.UI.StatusLbl.SetText(fmt.Sprintf("%s / %s   |   Speed: %s   |   ETA: %s", emptyToDash(p.Dl), emptyToDash(p.Tot), emptyToDash(job.Speed), formatDuration(etaSec)))
 			})
 		},
 		OnLine: func(line string) { mw.Logger.Info(line) },
@@ -681,7 +696,7 @@ func (mw *MainWindow) processPlaylistJob(job *DownloadJob) {
 					fyne.Do(func() {
 						etaSec, _ := strconv.ParseFloat(p.Eta, 64)
 						job.UI.ChildProgs[realIdx] = pct
-						job.UI.ChildStats[realIdx] = fmt.Sprintf("%s | ETA: %s", emptyToDash(p.Spd), formatDuration(etaSec))
+						job.UI.ChildStats[realIdx] = fmt.Sprintf("%s / %s | %s | ETA: %s", emptyToDash(p.Dl), emptyToDash(p.Tot), emptyToDash(p.Spd), formatDuration(etaSec))
 						job.UI.ChildList.RefreshItem(widget.ListItemID(listIdx))
 
 						finishedMu.Lock()
@@ -777,6 +792,14 @@ func (mw *MainWindow) processPlaylistJob(job *DownloadJob) {
 
 	mw.updateDownloadsBadge()
 
+	mw.History.Add(HistoryEntry{
+		Title:     job.Title,
+		URL:       job.URL,
+		FilePath:  job.TargetDir,
+		OutputDir: job.OutputDir,
+		Status:    string(finalStatus),
+	})
+
 	mw.JobsMu.Lock()
 	anyActive := false
 	for _, j := range mw.Jobs {
@@ -856,6 +879,18 @@ func (mw *MainWindow) finishSingleJob(job *DownloadJob, resultPath string, err e
 	mw.updateDownloadsBadge()
 
 	mw.JobsMu.Lock()
+	finalStatus := string(job.Status)
+	mw.JobsMu.Unlock()
+
+	mw.History.Add(HistoryEntry{
+		Title:     job.Title,
+		URL:       job.URL,
+		FilePath:  resultPath,
+		OutputDir: job.OutputDir,
+		Status:    finalStatus,
+	})
+
+	mw.JobsMu.Lock()
 	anyActive := false
 	for _, j := range mw.Jobs {
 		if j.Status == StatusDownloading || j.Status == StatusQueued || j.Status == StatusStarting {
@@ -885,6 +920,19 @@ func (mw *MainWindow) onDownloadBest() {
 	if mw.FormatSelect.Selected == "mp3" {
 		dlFormat = "bestaudio/best"
 	}
+	mw.enqueueDownload(u, dlFormat)
+}
+
+func (mw *MainWindow) onDownloadBestAudio() {
+	u := strings.TrimSpace(mw.UrlEntry.Text)
+	if u == "" || mw.State.OutputDir == "" {
+		return
+	}
+
+	mw.resetProgressThrottle()
+	mw.Logger.Dbg("--- ENQUEUE BEST AUDIO ---")
+
+	dlFormat := "bestaudio/best"
 	mw.enqueueDownload(u, dlFormat)
 }
 

@@ -64,7 +64,7 @@ func (r *Runner) FetchInfo(ctx context.Context, url, browser, cookiesFile string
 	}
 
 	if strings.Contains(url, "list=") {
-		args = append(args, "--flat-playlist")
+		args = append(args, "--flat-playlist", "--lazy-playlist")
 	} else {
 		args = append(args, "--no-playlist")
 	}
@@ -134,7 +134,7 @@ func (r *Runner) Download(ctx context.Context, opts DownloadOptions) (string, er
 		"-f", opts.Format,
 		"-P", opts.OutDir,
 		"--progress-template",
-		`download:download:{"p":"%(progress._percent_str)s","eta":"%(progress.eta)s","spd":"%(progress._speed_str)s","dl":"%(progress.downloaded_bytes)s","tot":"%(progress.total_bytes)s"}` + "\n",
+		`download:download:{"p":"%(progress._percent_str)s","eta":"%(progress.eta)s","spd":"%(progress._speed_str)s","dl":"%(progress._downloaded_bytes_str)s","tot":"%(progress._total_bytes_str)s"}` + "\n",
 	}
 
 	if !opts.AllowPlaylist {
@@ -233,11 +233,8 @@ func (r *Runner) Download(ctx context.Context, opts DownloadOptions) (string, er
 			if opts.OnStart != nil {
 				opts.OnStart(touchedFiles)
 			}
-		} else if strings.Contains(line, "has already been downloaded") && strings.HasPrefix(line, "[download] ") {
-			parts := strings.Split(line, " has already been downloaded")
-			if len(parts) > 0 {
-				finalFilePath = strings.TrimPrefix(parts[0], "[download] ")
-			}
+		} else if strings.HasPrefix(line, "[download] ") && strings.Contains(line, "has already been downloaded") {
+			finalFilePath = strings.TrimPrefix(strings.Split(line, " has already been downloaded")[0], "[download] ")
 		}
 		stateMu.Unlock()
 
