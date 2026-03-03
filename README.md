@@ -57,7 +57,7 @@
   Лицензия: BSD 3-Clause
 
 ---
-![application](image/applicationv2.png)
+![application](image/applicationv3.png)
 
 ## 🇬🇧 English
 
